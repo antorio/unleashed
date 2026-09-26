@@ -31,7 +31,7 @@ entries = []
 _rows = {}              # id -> faceset_check row for the current list
 _view = []              # ids shown in the gallery (the filter), in order
 _selected = None        # id of the photo shown on the right
-_undo = []              # [(label, [(position, entry), ...])], newest last
+_undo = []              # [(label, [(position, entry), ...]) or (label, ('added', [ids]))], newest last
 _next_id = 0
 _video_path = None
 current_video_fps = 0
@@ -68,15 +68,15 @@ def facemgr_tab():
         with gr.Row(equal_height=False):
             with gr.Column(scale=3, min_width=280):
                 gr.Markdown("### 1 · Add photos")
-                in_photos = gr.Files(label="Drop photos of the person (JPG / PNG)", file_count="multiple",
-                                     file_types=["image"], height=150)
+                in_photos = gr.Files(label="Drop photos of the person (JPG / PNG) or facesets (.fsz)",
+                                     file_count="multiple", file_types=["image", ".fsz"], height=150)
                 with gr.Accordion("Faces from a video", open=False):
                     in_video = gr.File(label="Video", file_types=["video"], height=90)
                     video_frame = gr.Image(label="Frame", interactive=False, format="jpeg", height=220)
                     video_slider = gr.Slider(1, 1, value=1, step=1, label="Frame", interactive=False)
                     btn_add_frame = gr.Button("Add the faces in this frame", interactive=False)
-                with gr.Accordion("Edit an existing faceset", open=False):
-                    in_fsz = gr.File(label="Open a faceset (.fsz): replaces the photos in the list",
+                with gr.Accordion("Add a faceset", open=False):
+                    in_fsz = gr.File(label="A faceset (.fsz): its photos are added to the list",
                                      file_types=[".fsz"], height=90)
                 gr.Markdown("### 3 · Save")
                 save_name = gr.Textbox(value="faceset", label="Faceset name", max_lines=1)
@@ -366,14 +366,18 @@ def _select_after_removal(position):
 # ----------------------------------------------------------------------------- events
 
 def on_photos_added(files, progress=gr.Progress()):
-    """Add the faces of dropped photos; the drop zone is emptied again."""
+    """Add the faces of dropped photos (and the photos of dropped .fsz
+    facesets); the drop zone is emptied again."""
     if not files:
         return [None] + _render()
+    paths = [f.name if hasattr(f, 'name') else str(f) for f in files]
+    for path in [p for p in paths if p.lower().endswith('.fsz')]:
+        _add_faceset_file(path, progress)
+    files = [p for p in paths if not p.lower().endswith('.fsz')]
     known = {e['hash'] for e in entries if e['hash']}
     skipped, no_face, added = [], [], 0
-    for k, f in enumerate(files):
+    for k, path in enumerate(files):
         progress(k / len(files), desc="Adding photos")
-        path = f.name if hasattr(f, 'name') else str(f)
         with open(path, 'rb') as fh:
             digest = hashlib.sha1(fh.read()).hexdigest()
         if digest in known:
@@ -433,55 +437,76 @@ def on_add_frame(frame_num):
     return _render()
 
 
-def on_faceset_opened(fsz, progress=gr.Progress()):
-    """Open a .fsz to edit: its photos replace the list (Undo brings the old
-    list back). The save name is taken from the file."""
-    global _selected
-    if fsz is None:
-        return [None, gr.Textbox()] + _render()
-    path = fsz.name if hasattr(fsz, 'name') else str(fsz)
+def _add_faceset_file(path, progress):
+    """Add the photos of a .fsz to the list (the list is kept: add several
+    facesets, photos and video frames, then sort them out). Photos already in
+    the list are not added again. Undo takes the added photos out. Returns
+    the number of photos added (None: the file could not be read)."""
+    name = os.path.basename(path)
     folder = tempfile.mkdtemp(prefix='faceset_')
-    missing = []
+    missing, skipped, added = [], 0, []
     try:
-        # read the file first, then replace the list: a damaged file (a save
-        # cut off by a disconnect) used to empty the list and leave the page
-        # showing the old photos
         try:
             util.unzip(path, folder)
         except Exception as e:
-            gr.Warning(f"{os.path.basename(path)} is damaged or not a faceset ({e}); the list was not changed")
-            return [None, gr.Textbox()] + _render()
-        if entries:
-            _remove({e['id'] for e in entries}, 'open faceset')
-        _selected = None
+            gr.Warning(f"{name} is damaged or not a faceset ({e}); nothing was added")
+            return None
+        known = {e['hash'] for e in entries if e['hash']}
         pngs = [f for f in os.listdir(folder) if f.lower().endswith('.png')]
         pngs.sort(key=lambda f: [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', f)])
         for k, file in enumerate(pngs):
-            progress(k / max(len(pngs), 1), desc="Opening faceset")
+            progress(k / max(len(pngs), 1), desc=f"Adding {name}")
             p = os.path.join(folder, file)
+            with open(p, 'rb') as fh:
+                digest = hashlib.sha1(fh.read()).hexdigest()
+            if digest in known:
+                skipped += 1
+                continue
+            known.add(digest)
             image = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
             if image is None:
                 missing.append(file)
                 continue
+            before = len(entries)
             if image.shape[:2] == (512, 512):
                 found = get_all_faces(image)
                 if not found:
                     missing.append(file)
                     continue
-                _add(max(found, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1])), image, file)
+                _add(max(found, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1])), image,
+                     f"{name}: {file}", digest)
             else:
                 found = extract_face_images(p, (False, 0), 0.5)
                 if not found:
                     missing.append(file)
                 for face, img in found:
-                    _add(face, img, file)
+                    _add(face, img, f"{name}: {file}", digest)
+            added += [e['id'] for e in entries[before:]]
     finally:
         shutil.rmtree(folder, ignore_errors=True)
-    _refresh()
+    if added:
+        _undo.append((f"add {name}", ('added', added)))
+        del _undo[:-20]
     if missing:
-        gr.Warning(f"No face found in {len(missing)} image(s) of the faceset")
-    name = re.sub(r'[^\w\-]+', '_', os.path.splitext(os.path.basename(path))[0]).strip('_') or 'faceset'
-    return [None, gr.Textbox(value=name)] + _render()
+        gr.Warning(f"No face found in {len(missing)} image(s) of {name}")
+    if skipped:
+        gr.Info(f"{skipped} photo(s) of {name} already in the list, not added again")
+    return len(added)
+
+
+def on_faceset_opened(fsz, progress=gr.Progress()):
+    """Add a .fsz's photos to the list. An empty list takes the save name
+    from the file."""
+    if fsz is None:
+        return [None, gr.Textbox()] + _render()
+    path = fsz.name if hasattr(fsz, 'name') else str(fsz)
+    was_empty = not entries
+    added = _add_faceset_file(path, progress)
+    _refresh()
+    name = gr.Textbox()
+    if was_empty and added:
+        name = gr.Textbox(value=re.sub(r'[^\w\-]+', '_', os.path.splitext(os.path.basename(path))[0]).strip('_') or 'faceset')
+    return [None, name] + _render()
 
 
 def on_photo_selected(evt: gr.SelectData):
@@ -544,8 +569,14 @@ def on_undo():
     if not _undo:
         return _render()
     label, removed = _undo.pop()
-    if label == 'open faceset':
-        entries.clear()             # the opened faceset goes, the old list comes back
+    if isinstance(removed, tuple) and removed[0] == 'added':
+        # an added faceset goes out again
+        gone = set(removed[1])
+        entries[:] = [e for e in entries if e['id'] not in gone]
+        if _selected in gone:
+            _selected = None
+        _refresh()
+        return _render()
     for position, e in sorted(removed, key=lambda x: x[0]):
         entries.insert(min(position, len(entries)), e)
     _refresh()
