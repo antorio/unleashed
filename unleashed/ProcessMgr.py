@@ -855,17 +855,28 @@ class ProcessMgr():
         return mode in ('fallback', 'always') and {90, 180, 270} <= angles
 
     def retry_rotated(self, frame):
-        # the rotated frames are not the video's frame sequence: no expression
-        # smoothing for them (its tracks live in upright frame coordinates)
+        # The rotated copies of a frame are not the video's frame sequence and
+        # their coordinates are not the frame's: they are processed like a
+        # single image -- no landmark smoothing, no target tracks, no
+        # expression smoothing. They used to go into the stabilizer and the
+        # tracks of the upright frames, out of frame order (in_order(None)) and
+        # in rotated coordinates: each attempt aged every track and could take
+        # over an upright face's track, so upright frames after a retry changed
+        # and a render differed from run to run with several threads. The
+        # faces a retry finds are lying ones, which the default path
+        # (multi-angle + auto-rotate) also swaps with their own, unsmoothed
+        # landmarks.
         tls = getattr(self, '_tls', None)
         frame_index = getattr(tls, 'frame_index', None)
         if tls is not None:
             tls.frame_index = None
+            tls.rotated_retry = True
         try:
             return self._retry_rotated(frame)
         finally:
             if tls is not None:
                 tls.frame_index = frame_index
+                tls.rotated_retry = False
 
     def _retry_rotated(self, frame):
         copyframe = frame.copy()
@@ -890,17 +901,20 @@ class ProcessMgr():
         num_faces_found = 0
 
         # temporal smoothing is only safe for sequential video frames
+        # a rotated retry of a frame (see retry_rotated) has none of these
+        rotated_retry = bool(getattr(getattr(self, '_tls', None), 'rotated_retry', False))
         smoothing_on = (
             unleashed.globals.landmark_smoothing
             and (self.video_mode or unleashed.globals.force_landmark_smoothing)
             and self.stabilizer is not None
+            and not rotated_retry
         )
         # identity / face-shape averages along each face's track: video only,
         # independent of landmark smoothing
         track_identity = float(getattr(unleashed.globals, 'identity_strength', 0.0) or 0.0) > 0.0
         track_shape = float(getattr(unleashed.globals, 'face_shape_strength', 0.0) or 0.0) > 0.0
         tracks_on = (self.video_mode and getattr(self, 'target_tracks', None) is not None
-                     and (track_identity or track_shape))
+                     and (track_identity or track_shape) and not rotated_retry)
         mode = unleashed.globals.multi_angle_detection_mode
         angles = unleashed.globals.multi_angle_angles
 
