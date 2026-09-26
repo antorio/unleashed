@@ -141,9 +141,9 @@ faceset_average_mode = 'robust'
 faceset_outlier_threshold = 0.6
 
 # LivePortrait expression restorer (optional, faceswap tab). Re-injects the
-# target's real expression onto the swapped face. Default ON since 26 Sep (user;
+# target's real expression onto the swapped face. Default OFF (27 Sep, user;
 # heavy model, slower previews on CPU).
-expression_restorer = True
+expression_restorer = False
 expression_restorer_factor = 100    # 0-500 -> blend amount (100 = target amount; user default, was 80)
 expression_restore_eyes = True
 expression_restore_mouth = True
