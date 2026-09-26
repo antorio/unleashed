@@ -205,7 +205,7 @@ button.secondary:hover { background: var(--button-secondary-background-fill-hove
 .fs-pbadge.fs-dim { opacity: .45; }
 .fs-pbadge.fs-dim:hover { opacity: 1; }
 .fs-pbadge.fs-can-compare { cursor: pointer; }
-.fs-pprev { position: absolute; z-index: 5; object-fit: fill; pointer-events: none; }
+.fs-pprev { position: absolute; z-index: 5; object-fit: contain; pointer-events: none; }
 .fs-checks label { white-space: nowrap !important; }
 /* Gradio dims a Markdown to 20% while any event writing it runs; the readiness
    line is refreshed by every preview, so it was faded most of the time */
@@ -406,8 +406,13 @@ unleashed_js = """
                 const o = document.createElement('img');
                 o.className = 'fs-pprev';
                 o.src = pv.shown[pv.shown.length - 2];
+                // the same box AND the same fitting as the picture shown: the
+                // element is often larger than the picture in it (a wide Side
+                // by side picture in a tall box), and 'fill' stretched it
+                const cs = getComputedStyle(img);
                 Object.assign(o.style, {left: (r.left - br.left) + 'px', top: (r.top - br.top) + 'px',
-                                        width: r.width + 'px', height: r.height + 'px'});
+                                        width: r.width + 'px', height: r.height + 'px',
+                                        objectFit: cs.objectFit || 'contain', objectPosition: cs.objectPosition});
                 block.appendChild(o);
             };
             b.addEventListener('pointerdown', hold(true));

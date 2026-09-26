@@ -300,7 +300,7 @@ def faceswap_tab():
                     er = _s('er', gr.Checkbox(value=V['er'], label="Restore target expression (LivePortrait)"))
                     with gr.Column(visible=V['er']) as er_col:
                         with gr.Row():
-                            _s('er_strength', gr.Slider(0, 500, value=V['er_strength'], step=1, label="Strength %"))
+                            _s('er_strength', gr.Slider(0, 500, value=V['er_strength'], step=5, label="Strength %"))
                             _s('er_smoothing', gr.Slider(0.0, 1.0, value=V['er_smoothing'], step=0.05, label="Smoothing (video)"))
                         with gr.Row(elem_id="expr_checks"):
                             _s('er_eyes', gr.Checkbox(value=V['er_eyes'], label="Eyes / blink"))
@@ -945,6 +945,54 @@ def _compare_with_last(context, image):
     return f'{changed:.6f}' if changed > 0 else 'tiny'
 
 
+# The last preview swap, so Swapped <-> Side by side (and Refresh with
+# nothing changed) show it again instead of swapping the frame again. Reused
+# only when everything the swap reads is the same: the frame's pixels, the
+# preview options (painting included), every simple engine / app setting,
+# and the source and picked faces (embeddings, mask offsets).
+_swap_cache = {'key': None, 'image': None}
+
+
+def _swap_key(frame, options):
+    import hashlib
+    h = hashlib.md5()
+
+    def add(x, depth=0):
+        if isinstance(x, np.ndarray):
+            h.update(repr((x.shape, x.dtype.str)).encode())
+            h.update(np.ascontiguousarray(x).tobytes())
+        elif isinstance(x, dict) and depth < 4:
+            for k in sorted(x, key=str):
+                h.update(repr(k).encode())
+                add(x[k], depth + 1)
+        elif isinstance(x, (list, tuple)) and depth < 4:
+            h.update(b'[')
+            for v in x:
+                add(v, depth + 1)
+            h.update(b']')
+        else:
+            h.update(repr(x).encode())
+
+    simple = (bool, int, float, str, type(None), list, tuple)
+
+    def settings_of(obj, skip=()):
+        return {k: v for k, v in vars(obj).items()
+                if not k.startswith('_') and k not in skip and isinstance(v, simple)}
+
+    add(frame)
+    add(vars(options))
+    add(settings_of(G, skip=('INPUT_FACESETS', 'TARGET_FACES')))
+    add(settings_of(G.CFG))
+    for fs in G.INPUT_FACESETS:
+        h.update(repr(id(fs)).encode())
+        for f in getattr(fs, 'faces', []):
+            add(getattr(f, 'embedding', None))
+            add(getattr(f, 'mask_offsets', None))
+    for f in G.TARGET_FACES:
+        add(getattr(f, 'embedding', None))
+    return h.hexdigest()
+
+
 def _render_view(view, frame_num, swap_now):
     """The preview image update for this view."""
     from unleashed import core
@@ -960,6 +1008,7 @@ def _render_view(view, frame_num, swap_now):
 
     note = ''
     shown = frame
+    reused = False
     t_swap = time.perf_counter()
     if view == 'Mask':
         shown = core.mask_view(frame, S.build_options(mask_view=True))
@@ -973,7 +1022,14 @@ def _render_view(view, frame_num, swap_now):
         elif S.MODES[S.values['mode']] == 'selected' and not G.TARGET_FACES:
             note = 'no faces picked yet'
         else:
-            swapped = core.live_swap(frame.copy(), S.build_options())
+            options = S.build_options()
+            key = _swap_key(frame, options)
+            reused = key == _swap_cache['key']
+            if reused:
+                swapped = _swap_cache['image']
+            else:
+                swapped = core.live_swap(frame.copy(), options)
+                _swap_cache.update(key=key, image=swapped)
             if swapped is None or np.array_equal(swapped, frame):
                 note = f"no face swapped ({S.values['mode']})"
             if view == 'Side by side':
@@ -988,7 +1044,8 @@ def _render_view(view, frame_num, swap_now):
         # server-side time; if the browser shows it much later, the rest is the tunnel / network
         t_done = time.perf_counter()
         print(f'[preview] frame {frame_num}: load {(t_swap - t_start) * 1000:.0f} ms | {view.lower()} '
-              f'{(t_done - t_swap) * 1000:.0f} ms | total {(t_done - t_start) * 1000:.0f} ms', flush=True)
+              f'{(t_done - t_swap) * 1000:.0f} ms{" (swap reused)" if reused else ""} | '
+              f'total {(t_done - t_start) * 1000:.0f} ms', flush=True)
     return _image(image, note)
 
 
