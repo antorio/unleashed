@@ -167,8 +167,10 @@ button.secondary:hover { background: var(--button-secondary-background-fill-hove
 #fs_left .head, #fs_settings .head { flex-wrap: nowrap !important; gap: 6px !important; }
 #fs_left .head > label, #fs_settings .head > label { min-width: 0 !important; flex: 1 1 auto !important; }
 #fs_left .head .tab-like-container, #fs_settings .head .tab-like-container { flex: 0 0 auto !important; }
+/* room for 5 characters (0.125, 0.005 steps) next to the up/down arrows,
+   which cover the last digit of a 48px box */
 #fs_left .head input[type="number"], #fs_settings .head input[type="number"] {
-  width: 48px !important; min-width: 0 !important; padding: 4px 6px !important; }
+  width: calc(5ch + 32px) !important; min-width: 0 !important; padding: 4px 4px 4px 6px !important; }
 /* an empty gallery draws a 236px placeholder: keep the lists their own size */
 #src_gal .empty { min-height: 0 !important; height: 146px !important; }
 #people_gal .empty { min-height: 0 !important; height: 90px !important; }
