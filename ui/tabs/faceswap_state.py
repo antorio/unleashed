@@ -83,7 +83,8 @@ FACTORY = {
     # faces to replace
     'mode': 'Largest face', 'tolerance': G.distance_threshold,
     # swap
-    'resolution': '256px', 'passes': 1, 'identity': G.identity_strength, 'face_shape': G.face_shape_strength,
+    'resolution': '256px', 'passes': 1, 'passes_keep': G.passes_keep_look,
+    'identity': G.identity_strength, 'face_shape': G.face_shape_strength,
     # expression
     'er': G.expression_restorer, 'er_strength': G.expression_restorer_factor,
     'er_eyes': G.expression_restore_eyes, 'er_mouth': G.expression_restore_mouth, 'er_brows': G.expression_restore_brows,
@@ -93,6 +94,7 @@ FACTORY = {
     # occlusion, edges & blending
     'mask_engine': 'DFL XSeg', 'mask_objects': 'cup,hands,hair,banana',
     'erosion': G.mask_erosion_iterations, 'blur': G.mask_blur_size, 'to_chin': G.mask_bottom_to_chin,
+    'mask_grow': G.occlusion_mask_grow, 'mask_soften': G.occlusion_mask_soften,
     'aligned_edges': G.mask_face_aligned, 'color_transfer': G.use_color_transfer,
     'crop_top': 0.0, 'crop_bottom': 0.0, 'crop_left': 0.0, 'crop_right': 0.0,
     # enhance
@@ -102,6 +104,8 @@ FACTORY = {
     'multi_angle': next(k for k, v in MULTI_ANGLE.items() if v == G.multi_angle_detection_mode),
     'upright': G.angle0_bonus, 'autorotate': True,
     'lmk_align': G.use_landmark_alignment, 'hi_lmk': G.use_hi_landmarker,
+    'hi_lmk_min': G.hi_landmarker_min_score, 'hi_lmk_level': G.hi_landmarker_level,
+    'hi_lmk_frontal': G.hi_landmarker_frontal_only,
     'lmk_gate': G.landmark_sanity_gate, 'lmk_gate_thr': G.landmark_sanity_threshold,
     'smoothing': G.landmark_smoothing, 'smoothing_strength': G.landmark_smoothing_strength,
     'smoothing_deadzone': G.landmark_smoothing_deadzone,
@@ -204,6 +208,9 @@ def apply_settings(settings=None):
     G.expression_pose_lock = bool(v['er_pose_lock'])
     G.expression_pose_gate = bool(v['er_pose_gate'])
     G.expression_keep_structure = bool(v['er_structure'])
+    G.passes_keep_look = bool(v['passes_keep'])
+    G.occlusion_mask_grow = float(v['mask_grow'])
+    G.occlusion_mask_soften = float(v['mask_soften'])
     G.mask_erosion_iterations = int(v['erosion'])
     G.mask_blur_size = int(v['blur'])
     G.mask_bottom_to_chin = bool(v['to_chin'])
@@ -219,6 +226,9 @@ def apply_settings(settings=None):
     G.autorotate_faces = bool(v['autorotate'])
     G.use_landmark_alignment = bool(v['lmk_align'])
     G.use_hi_landmarker = bool(v['hi_lmk'])
+    G.hi_landmarker_min_score = float(v['hi_lmk_min'])
+    G.hi_landmarker_level = bool(v['hi_lmk_level'])
+    G.hi_landmarker_frontal_only = bool(v['hi_lmk_frontal'])
     G.landmark_sanity_gate = bool(v['lmk_gate'])
     G.landmark_sanity_threshold = float(v['lmk_gate_thr'])
     G.landmark_smoothing = bool(v['smoothing'])
@@ -301,7 +311,7 @@ def summary(section):
     if section == 'swap':
         parts = [v['resolution']]
         if int(v['passes']) > 1:
-            parts.append(f"{int(v['passes'])} passes")
+            parts.append(f"{int(v['passes'])} passes" + (' (kept)' if v['passes_keep'] else ''))
         if float(v['identity']) > 0:
             parts.append(f"identity {float(v['identity']):.2f}")
         if float(v['face_shape']) > 0:
@@ -314,6 +324,8 @@ def summary(section):
         return ' · '.join(parts)
     if section == 'occlusion':
         parts = [v['mask_engine']]
+        if MASK_ENGINES.get(v['mask_engine']) and (float(v['mask_grow']) or float(v['mask_soften'])):
+            parts.append(f"edge {float(v['mask_grow']):+g}/{float(v['mask_soften']):g}")
         if any(t.get('mask') is not None for t in targets):
             parts.append('painted')
         return ' · '.join(parts)

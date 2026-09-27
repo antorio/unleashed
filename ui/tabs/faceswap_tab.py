@@ -247,7 +247,11 @@ def faceswap_tab():
                 with gr.Accordion(f"Swap · {S.summary('swap')}", open=True, elem_classes="fs-box fs-last") as acc_swap:
                     with gr.Row():
                         _s('resolution', gr.Dropdown(S.RESOLUTIONS, value=V['resolution'], label="Resolution"))
-                        _s('passes', gr.Slider(1, 5, value=V['passes'], step=1, label="Passes (1 = normal)"))
+                        C['passes'] = _s('passes', gr.Slider(1, 5, value=V['passes'], step=1, label="Passes (1 = normal)"))
+                    with gr.Row(visible=int(V['passes']) > 1) as passes_keep_row:
+                        C['passes_keep_row'] = passes_keep_row
+                        _s('passes_keep', gr.Checkbox(value=V['passes_keep'],
+                                                      label="Keep the first pass's size and colour"))
                     with gr.Row():
                         _s('identity', gr.Slider(0.0, 1.0, value=V['identity'], step=0.05, label="Identity boost"))
                         _s('face_shape', gr.Slider(0.0, 1.0, value=V['face_shape'], step=0.05, label="Source jaw & chin"))
@@ -320,6 +324,12 @@ def faceswap_tab():
                     with gr.Column(visible=V['mask_engine'] == 'Clip2Seg (by text)') as clip_col:
                         _s('mask_objects', gr.Textbox(value=V['mask_objects'], label="Objects to keep (comma separated)",
                                                       max_lines=1))
+                    # the face's edge when a mask model is on (Edge erosion / blur below only
+                    # shape the face square around it)
+                    with gr.Row(visible=V['mask_engine'] != 'None') as mask_edge_row:
+                        C['mask_edge_row'] = mask_edge_row
+                        _s('mask_grow', gr.Slider(-10, 10, value=V['mask_grow'], step=0.5, label="Mask edge grow %"))
+                        _s('mask_soften', gr.Slider(0, 10, value=V['mask_soften'], step=0.5, label="Mask edge soften %"))
                     C['paint_md'] = gr.Markdown(S.mask_info(), visible=bool(S.mask_info()), elem_classes="fs-line")
                     with gr.Row(elem_classes="fs-seg"):
                         C['btn_paint'] = gr.Button("Paint areas that stay original", size="sm")
@@ -356,8 +366,15 @@ def faceswap_tab():
                         lmk = _s('lmk_align', gr.Checkbox(value=V['lmk_align'], label="68-point alignment"))
                     with gr.Column(visible=V['lmk_align']) as lmk_col:
                         with gr.Row(elem_classes="fs-checks"):
-                            _s('hi_lmk', gr.Checkbox(value=V['hi_lmk'], label="2dfan4 landmarks"))
+                            C['hi_lmk'] = _s('hi_lmk', gr.Checkbox(value=V['hi_lmk'], label="2dfan4 landmarks"))
                             C['lmk_gate'] = _s('lmk_gate', gr.Checkbox(value=V['lmk_gate'], label="Landmark sanity gate"))
+                        with gr.Column(visible=V['hi_lmk']) as hi_lmk_row:
+                            C['hi_lmk_row'] = hi_lmk_row
+                            _s('hi_lmk_min', gr.Slider(0.0, 0.9, value=V['hi_lmk_min'], step=0.05,
+                                                       label="2dfan4 min confidence"))
+                            with gr.Row(elem_classes="fs-checks"):
+                                _s('hi_lmk_level', gr.Checkbox(value=V['hi_lmk_level'], label="2dfan4: level the face first"))
+                                _s('hi_lmk_frontal', gr.Checkbox(value=V['hi_lmk_frontal'], label="2dfan4 only for frontal faces"))
                         with gr.Column(visible=V['lmk_gate']) as gate_col:
                             C['gate_col'] = gate_col
                             _s('lmk_gate_thr', gr.Slider(0.0, 0.50, value=V['lmk_gate_thr'], step=0.005, label="Gate threshold"))
@@ -421,6 +438,9 @@ def _wire(tick, er, er_col, engine, clip_col, enh, enh_col, lmk, lmk_col, sm, sm
     show = lambda cond: f"(v) => ({{__type__: 'update', visible: {cond}}})"
     er.change(None, [er], [er_col], js=show('v'), **INTERNAL)
     engine.change(None, [engine], [clip_col], js=show("v === 'Clip2Seg (by text)'"), **INTERNAL)
+    engine.change(None, [engine], [C['mask_edge_row']], js=show("v !== 'None'"), **INTERNAL)
+    C['passes'].change(None, [C['passes']], [C['passes_keep_row']], js=show('v > 1'), **INTERNAL)
+    C['hi_lmk'].change(None, [C['hi_lmk']], [C['hi_lmk_row']], js=show('v'), **INTERNAL)
     enh.change(None, [enh], [enh_col], js=show("v !== 'None'"), **INTERNAL)
     enh.change(None, [enh], [C['enh_after_col']], js=show("v !== 'None'"), **INTERNAL)
     lmk.change(None, [lmk], [lmk_col], js=show('v'), **INTERNAL)

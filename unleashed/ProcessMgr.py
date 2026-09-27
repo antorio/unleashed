@@ -89,6 +89,114 @@ def _release_idle_processors(keep=()):
 
 
 
+def _crop_face_points(crop):
+    """The inner face landmarks (68-point scheme 17-67: brows, eyes, nose,
+    mouth) of the face in a swapped face crop, in the crop's coordinates, or
+    None. The crop is padded: the detector expects a face in a scene, not
+    one that fills the picture."""
+    from unleashed.face_util import get_face_analyser
+    from unleashed.utilities import conditional_thread_semaphore
+    from insightface.app.common import Face
+    img = np.clip(crop, 0, 255).astype(np.uint8)
+    pad = img.shape[0] // 2
+    big = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(128, 128, 128))
+    try:
+        analyser = get_face_analyser()
+        landmarker = analyser.models.get('landmark_3d_68')
+        if landmarker is None:
+            return None
+        with conditional_thread_semaphore():
+            boxes, kpss = analyser.det_model.detect(big, max_num=1)
+            if boxes is None or len(boxes) == 0:
+                return None
+            face = Face(bbox=boxes[0][:4], kps=kpss[0] if kpss is not None else None, det_score=boxes[0][4])
+            pts = landmarker.get(big, face)
+    except Exception:
+        return None
+    return np.asarray(pts, dtype=np.float64)[17:68, :2] - pad
+
+
+def _face_ellipse(shape, pts):
+    """The inner face (brows to chin, cheek to cheek) as a boolean mask."""
+    m = np.zeros(shape[:2], np.uint8)
+    if pts is None:
+        h, w = shape[:2]                          # the face sits here in an arcface crop
+        centre, axes = (w * 0.5, h * 0.55), (w * 0.30, h * 0.36)
+    else:
+        eyes = pts[19:25].mean(0), pts[25:31].mean(0)      # 68-point 36-41 / 42-47
+        iod = float(np.linalg.norm(eyes[1] - eyes[0]))
+        centre, axes = tuple(pts.mean(0)), (0.95 * iod, 1.2 * iod)
+    cv2.ellipse(m, (int(round(centre[0])), int(round(centre[1]))), (max(1, int(axes[0])), max(1, int(axes[1]))),
+                0, 0, 360, 255, -1)
+    return m > 0
+
+
+def _crop_look(crop):
+    """Where the face's features are and what colour it has in a swapped crop."""
+    pts = _crop_face_points(crop)
+    region = _face_ellipse(crop.shape, pts)
+    lab = cv2.cvtColor(np.clip(crop, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+    stats = [(float(lab[:, :, c][region].mean()), float(lab[:, :, c][region].std()) + 1e-6) for c in range(3)]
+    return {'pts': pts, 'region': region, 'stats': stats}
+
+
+def _restore_crop_look(crop, ref):
+    """A later pass's crop put back onto the first pass's features and colour.
+    Geometry: the affine (least squares) taking this pass's inner face
+    landmarks onto the first pass's -- 51 points, so the detection noise
+    averages out; an affine and not a similarity, because what the passes
+    change is mostly the height (eyes to mouth), not the size. Skipped when
+    the points are missing or the move looks wrong. Colour: LAB mean /
+    spread over the inner face."""
+    out = crop.astype(np.float32)
+    if ref is None:
+        return out
+    if ref['pts'] is not None:
+        pts = _crop_face_points(out)
+        if pts is not None:
+            src = np.hstack([pts, np.ones((len(pts), 1))])
+            A = np.linalg.lstsq(src, ref['pts'], rcond=None)[0].T          # 2x3
+            sv = np.linalg.svd(A[:, :2], compute_uv=False)
+            eyes = ref['pts'][19:25].mean(0), ref['pts'][25:31].mean(0)
+            iod = float(np.linalg.norm(eyes[1] - eyes[0]))
+            moved = float(np.abs(src @ A.T - pts).max())
+            if (np.linalg.det(A[:, :2]) > 0 and 0.85 <= sv.min() and sv.max() <= 1.18
+                    and sv.max() / sv.min() <= 1.12 and moved <= 0.3 * iod):
+                out = cv2.warpAffine(out, A.astype(np.float32), (out.shape[1], out.shape[0]),
+                                     flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    lab = cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+    region = ref['region']
+    for c, (mean, std) in enumerate(ref['stats']):
+        ch = lab[:, :, c]
+        m, s = float(ch[region].mean()), float(ch[region].std()) + 1e-6
+        lab[:, :, c] = (ch - m) * (std / s) + mean
+    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32)
+
+
+def shape_mask_edge(keep, grow_pct, soften_pct):
+    """The occlusion mask with its edge moved and / or feathered. keep: HxW
+    float, 1 = the original stays (outside the face, occluders), 0 = the swap
+    shows. grow_pct: + moves the edge outwards (the swapped face covers more),
+    - inwards, in percent of the crop size; soften_pct: Gaussian feather, in
+    percent of the crop size. Both 0: the mask as it is."""
+    if not grow_pct and not soften_pct:
+        return keep
+    h, w = keep.shape[:2]
+    size = float(np.sqrt(h * w))
+    face = 1.0 - np.clip(keep.astype(np.float32), 0.0, 1.0)
+    if grow_pct:
+        inside = (face > 0.5).astype(np.uint8)
+        if 0 < int(inside.sum()) < inside.size:
+            # signed distance to the edge (+ inside the face), moved by the grow;
+            # a one-pixel ramp keeps the new edge anti-aliased
+            d_in = cv2.distanceTransform(inside, cv2.DIST_L2, 5)
+            d_out = cv2.distanceTransform(1 - inside, cv2.DIST_L2, 5)
+            face = np.clip(d_in - d_out + grow_pct / 100.0 * size + 0.5, 0.0, 1.0).astype(np.float32)
+    if soften_pct:
+        face = cv2.GaussianBlur(face, (0, 0), soften_pct / 100.0 * size)
+    return 1.0 - face
+
+
 class FrameSequencer():
     """Lets frames enter a critical section in FRAME ORDER.
 
@@ -1280,15 +1388,19 @@ class ProcessMgr():
         for p in self.processors:
             _ps = _pt.perf_counter()
             if p.type == 'swap':
-                swap_result_frames = []
-                subsample_frames = self.implode_pixel_boost(aligned_img, model_output_size, subsample_total)
-                for sliced_frame in subsample_frames:
-                    for _ in range(0,self.options.num_swap_steps):
-                        sliced_frame = self.prepare_crop_frame(sliced_frame)
-                        sliced_frame = p.Run(inputface, target_face, sliced_frame)
-                        sliced_frame = self.normalize_swap_frame(sliced_frame)
-                    swap_result_frames.append(sliced_frame)
-                fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
+                if self.options.num_swap_steps > 1 and getattr(unleashed.globals, 'passes_keep_look', False):
+                    fake_frame = self.swap_passes_keeping_look(p, inputface, target_face, aligned_img, model_output_size,
+                                                               subsample_total, subsample_size)
+                else:
+                    swap_result_frames = []
+                    subsample_frames = self.implode_pixel_boost(aligned_img, model_output_size, subsample_total)
+                    for sliced_frame in subsample_frames:
+                        for _ in range(0,self.options.num_swap_steps):
+                            sliced_frame = self.prepare_crop_frame(sliced_frame)
+                            sliced_frame = p.Run(inputface, target_face, sliced_frame)
+                            sliced_frame = self.normalize_swap_frame(sliced_frame)
+                        swap_result_frames.append(sliced_frame)
+                    fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
                 scale_factor = 0.0
             elif p.type == 'mask':
@@ -1687,6 +1799,31 @@ class ProcessMgr():
         return img_matte
 
 
+    def swap_passes_keeping_look(self, p, inputface, target_face, aligned_img, model_size, total, size):
+        """Passes > 1 where every later pass is brought back to the first
+        pass's features and colour (passes_keep_look). Each pass feeds
+        inswapper its own previous output with the same alignment, so what it
+        changes adds up: measured on 10 source/target pairs (256 px), the
+        eye-to-mouth distance shrank 3.4% after pass 1 and 5.2% after pass 5,
+        the brightness rose +2 -> +7 (LAB L), while the likeness to the source
+        peaked at pass 2-3. With this: eye-to-mouth 0.968-0.972 of the target
+        at passes 2-5, brightness +1.4..+2.3, likeness 0.903 / 0.902 at passes
+        2 / 3 (without: 0.906 / 0.906). The first pass is exactly the usual one."""
+        slices = list(self.implode_pixel_boost(aligned_img, model_size, total))
+        steps = self.options.num_swap_steps
+        full, ref = None, None
+        for k in range(steps):
+            slices = [self.normalize_swap_frame(p.Run(inputface, target_face, self.prepare_crop_frame(s))) for s in slices]
+            full = self.explode_pixel_boost(slices, model_size, total, size)
+            if k == 0:
+                ref = _crop_look(full)
+            else:
+                full = _restore_crop_look(full, ref)
+                if k < steps - 1:
+                    slices = list(self.implode_pixel_boost(full, model_size, total))
+        return full
+
+
     def prepare_crop_frame(self, swap_frame):
         model_type = 'inswapper'
         model_mean = [0.0, 0.0, 0.0]
@@ -1785,6 +1922,8 @@ class ProcessMgr():
 
     def apply_mask(self, raw_mask, frame:Frame, target:Frame):
         img_mask = cv2.resize(raw_mask, (target.shape[1], target.shape[0]))
+        img_mask = shape_mask_edge(img_mask, float(getattr(unleashed.globals, 'occlusion_mask_grow', 0.0) or 0.0),
+                                   float(getattr(unleashed.globals, 'occlusion_mask_soften', 0.0) or 0.0))
         img_mask = np.reshape(img_mask, [img_mask.shape[0],img_mask.shape[1],1])
 
         # The restore-source (frame = original aligned crop) must match the target

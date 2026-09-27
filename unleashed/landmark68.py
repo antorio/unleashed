@@ -98,12 +98,19 @@ class _Fan2d4:
         except Exception:
             self.input_name = 'input'
 
-    def detect(self, frame_bgr, bbox):
+    def detect(self, frame_bgr, bbox, angle=0.0):
+        """angle (degrees, cv2 sense): the crop is turned by it about the box
+        centre first, e.g. the eye line's angle so the face reaches the model
+        level. 0: exactly FaceFusion's crop."""
         b = np.asarray(bbox, dtype=np.float32).reshape(-1)[:4]
         wh = float(np.maximum(np.max(b[2:] - b[:2]), 1.0))
         scale = 195.0 / wh
         tx, ty = (self.MODEL_SIZE - (b[2:] + b[:2]) * scale) * 0.5
         affine = np.array([[scale, 0.0, tx], [0.0, scale, ty]], dtype=np.float32)
+        if angle:
+            centre = (float(b[0] + b[2]) * 0.5, float(b[1] + b[3]) * 0.5)
+            R = np.vstack([cv2.getRotationMatrix2D(centre, float(angle), 1.0), [0.0, 0.0, 1.0]])
+            affine = (affine.astype(np.float64) @ R).astype(np.float32)
 
         crop = cv2.warpAffine(frame_bgr, affine, (self.MODEL_SIZE, self.MODEL_SIZE))
         crop = self._optimize_contrast(crop)
@@ -132,6 +139,23 @@ class _Fan2d4:
         return cv2.cvtColor(lab, cv2.COLOR_Lab2RGB)
 
 
+def _level_angle(face, lm68):
+    """The eye line's angle (degrees): the face is turned level before 2dfan4.
+    From buffalo's 68 points (the landmarks that stay put best when the head
+    tilts); the detector's 5 points when they are missing."""
+    try:
+        if lm68 is not None:
+            p = np.asarray(lm68, dtype=np.float64)[:, :2]
+            left, right = p[36:42].mean(0), p[42:48].mean(0)
+        else:
+            k = np.asarray(face['kps'], dtype=np.float64)
+            left, right = k[0], k[1]
+        d = right - left
+        return float(np.degrees(np.arctan2(d[1], d[0])))
+    except Exception:
+        return 0.0
+
+
 def refine_faces_landmark68(frame, faces):
     """If enabled, overwrite each face's landmark_3d_68 with 2dfan4's 68 points.
 
@@ -154,6 +178,9 @@ def refine_faces_landmark68(frame, faces):
 
     prof = getattr(unleashed.globals, 'profile_timings', False)
     dbg = getattr(unleashed.globals, 'hi_landmarker_debug', False)
+    min_score = float(getattr(unleashed.globals, 'hi_landmarker_min_score', 0.0) or 0.0)
+    level = bool(getattr(unleashed.globals, 'hi_landmarker_level', False))
+    frontal = bool(getattr(unleashed.globals, 'hi_landmarker_frontal_only', False))
     t0 = None
     if prof:
         import time as _t
@@ -168,9 +195,40 @@ def refine_faces_landmark68(frame, faces):
                 bbox = getattr(f, 'bbox', None)
             if bbox is None:
                 continue
-            pts, score = lm.detect(frame, bbox)
+            prev = f.get('landmark_3d_68') if hasattr(f, 'get') else None
+            angle = _level_angle(f, prev) if level else 0.0
+            pts, score = lm.detect(frame, bbox, angle)
             if pts is None or pts.shape[0] != 68:
                 continue
+            # 2dfan4's confidence (like FaceFusion's face_landmarker_score):
+            # below min_score its points are replaced by buffalo's 68 (blended
+            # over +-0.1 around it, so a score near the line does not flip the
+            # alignment between the two sets, which sit ~7% of the eye distance
+            # apart). Measured on a neutral photo: clean faces score 0.91-0.97;
+            # with a 4 px blur 2dfan4 fails outright (median error 1.07 x the eye
+            # distance, buffalo 0.17) and scores 0.15; below 0.3 it was off by
+            # 1.17 in median against buffalo's 0.25.
+            weight = 1.0
+            if min_score > 0.0 and prev is not None:
+                weight = float(np.clip((score - min_score) / 0.2 + 0.5, 0.0, 1.0))
+            # frontal only: fade to buffalo's 68 as the head turns up / down
+            # (pitch 10 -> 25 deg) or sideways (yaw 30 -> 50 deg), buffalo's
+            # pose. Measured (neutral photo): on two faces looking up (pitch
+            # -20/-22) 2dfan4's eye-to-mouth distance was 4-7% shorter than
+            # buffalo's (~0% on level faces) -- the swap came out shorter, the
+            # "face gets smaller when looking up"; and its landmarks moved ~1.6x
+            # more than buffalo's under tilt / blur at |yaw| 45-90.
+            if frontal and prev is not None:
+                pose = f.get('pose') if hasattr(f, 'get') else None
+                if pose is not None and len(pose) >= 2:
+                    fade = lambda x, a, b: float(np.clip((b - abs(float(x))) / (b - a), 0.0, 1.0))
+                    weight *= min(fade(pose[0], 10.0, 25.0), fade(pose[1], 30.0, 50.0))
+            if weight <= 0.0:
+                if dbg:
+                    print(f"[hi-landmarker] score {score:.2f} (min {min_score:.2f}) / pose: buffalo's 68 kept")
+                continue
+            if weight < 1.0:
+                pts = weight * pts + (1.0 - weight) * np.asarray(prev, dtype=np.float32)[:, :2]
             # z is filled with zeros: 2dfan4 is a 2D landmarker, and nothing that
             # reads landmark_3d_68 uses the z column (landmark_68_to_5 takes
             # [:, :2] and the stabilizer leaves z untouched). buffalo_l's 1k3d68
@@ -178,12 +236,11 @@ def refine_faces_landmark68(frame, faces):
             z = np.zeros((68, 1), dtype=np.float32)
             # face shape from the source compares 3D shapes: it asks for
             # buffalo's 68 points (with depth) and reads this copy of them
-            prev = f.get('landmark_3d_68') if hasattr(f, 'get') else None
             if prev is not None:
                 f['landmark_3d_68_buffalo'] = prev
             f['landmark_3d_68'] = np.concatenate([pts.astype(np.float32), z], axis=1)
             if dbg:
-                print(f"[hi-landmarker] refined 68pts (score={score:.2f})")
+                print(f"[hi-landmarker] refined 68pts (score={score:.2f}, weight={weight:.2f}, angle={angle:.1f})")
         except Exception as e:
             if dbg:
                 print(f"[hi-landmarker] per-face refine failed: {e}")

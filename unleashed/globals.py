@@ -47,6 +47,27 @@ mask_bottom_to_chin = True
 # from the bounding box, so tilted faces were eroded ~75% deeper at 25 degrees.
 # Default ON since 26 Sep (user).
 mask_face_aligned = True
+# The occlusion mask's own edge (Occlusion box; 0 = the mask exactly as the
+# model draws it). With a mask model on, the edge of the swapped face is the
+# mask's edge -- Erosion / Blur above only shape the face square around it.
+# Both in percent of the face crop, so they do the same at every resolution.
+#   grow:   + the swapped face reaches further out (over the target's own jaw
+#           line / hairline), - more of the edge stays original
+#   soften: feather (Gaussian) of that edge
+occlusion_mask_grow = 0.0
+occlusion_mask_soften = 0.0
+# Passes > 1: bring every later pass back to the first pass's size, position
+# and colour (Swap box; False = each pass simply feeds the previous one's
+# output, and the drift adds up -- see ProcessMgr.swap_passes_keeping_look).
+passes_keep_look = False
+# 2dfan4 (Detection & tracking): below this confidence its landmarks give way
+# to buffalo's 68 (0 = always 2dfan4, the old behaviour; FaceFusion uses 0.5).
+hi_landmarker_min_score = 0.0
+# 2dfan4 on a crop turned so the eyes are level (False = FaceFusion's upright crop)
+hi_landmarker_level = False
+# 2dfan4 only for faces looking roughly straight: buffalo's 68 take over as the
+# head turns up / down or sideways (a smooth blend, no switch)
+hi_landmarker_frontal_only = False
 
 # Identity strength, 0-1 (0 = off): push the source identity away from the
 # target's own identity before it conditions inswapper (see FaceSwapInsightFace).
