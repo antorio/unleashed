@@ -55,7 +55,7 @@ class FFXSegBase:
         for (sess, ins, outs) in self.sessions:
             io_binding = sess.io_binding()              # per-call -> thread-safe
             io_binding.bind_cpu_input(ins[0].name, temp_frame)
-            io_binding.bind_output(outs[0].name, self.devicename)
+            io_binding.bind_output(outs[0].name, "cpu")      # host output: see FaceSwapInsightFace.Run
             sess.run_with_iobinding(io_binding)
             r = io_binding.copy_outputs_to_cpu()[0][0]
             r = np.clip(r, 0, 1.0)

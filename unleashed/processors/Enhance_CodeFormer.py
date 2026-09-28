@@ -45,7 +45,7 @@ class Enhance_CodeFormer():
         io_binding = self.model_codeformer.io_binding()
         io_binding.bind_cpu_input(self.model_inputs[0].name, temp_frame.astype(np.float32))
         io_binding.bind_cpu_input(self.model_inputs[1].name, np.array([0.5]))
-        io_binding.bind_output(self.model_outputs[0].name, self.devicename)
+        io_binding.bind_output(self.model_outputs[0].name, "cpu")   # host output: see FaceSwapInsightFace.Run
         self.model_codeformer.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]

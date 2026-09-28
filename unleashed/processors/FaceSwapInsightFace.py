@@ -71,7 +71,11 @@ class FaceSwapInsightFace():
         io_binding = self.model_swap_insightface.io_binding()           
         io_binding.bind_cpu_input("target", temp_frame)
         io_binding.bind_cpu_input("source", latent)
-        io_binding.bind_output("output", self.devicename)
+        # the output straight to host memory: left on the GPU and copied
+        # after the run, it came back wrong now and then when threads share
+        # the session (L4: 1 of 1600 calls, off by up to 0.97 -- a ruined
+        # slice of the face; 0 of 1600 this way, same speed; tools/ort_race.py)
+        io_binding.bind_output("output", "cpu")
         self.model_swap_insightface.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()[0]
         return ort_outs[0]

@@ -44,7 +44,7 @@ class Enhance_GFPGAN():
 
         io_binding = self.model_gfpgan.io_binding()           
         io_binding.bind_cpu_input("input", temp_frame)
-        io_binding.bind_output("1288", self.devicename)
+        io_binding.bind_output("1288", "cpu")          # host output: see FaceSwapInsightFace.Run
         self.model_gfpgan.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]

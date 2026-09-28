@@ -8,8 +8,9 @@ and the mask model (DFL XSeg) the way the app does, makes 16 fixed inputs
 for each, takes their outputs one at a time as the reference, then lets 8
 threads call both models 200 times each, per way of calling:
 
-    app      io_binding, output left on the GPU, copy_outputs_to_cpu()
-             (what the app does now)
+    old      io_binding, output left on the GPU, copy_outputs_to_cpu()
+             (the app until 48015a6; L4: 1 of 1600 swap calls wrong, off
+             by 0.97; the others 0 -- the app now binds outputs to the CPU)
     sync     the same + io_binding.synchronize_outputs() before the copy
     cpu_out  io_binding, output bound to the CPU
     run      session.run()
@@ -69,7 +70,7 @@ def main():
         return binding.copy_outputs_to_cpu()[0]
 
     reference = {m: [call('run', s, o, f) for f in feeds] for m, (s, o, feeds) in models.items()}
-    for way in ('app', 'sync', 'cpu_out', 'run'):
+    for way in ('old', 'sync', 'cpu_out', 'run'):
         same = all(np.array_equal(call(way, s, o, f), reference[m][i])
                    for m, (s, o, feeds) in models.items() for i, f in enumerate(feeds))
         wrong = {m: 0 for m in models}

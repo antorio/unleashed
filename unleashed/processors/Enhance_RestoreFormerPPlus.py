@@ -44,7 +44,7 @@ class Enhance_RestoreFormerPPlus():
         # the worker threads and produces stale/jittered frames every so often.
         io_binding = self.model_restoreformerpplus.io_binding()
         io_binding.bind_cpu_input(self.model_inputs[0].name, temp_frame)
-        io_binding.bind_output(self.model_outputs[0].name, self.devicename)
+        io_binding.bind_output(self.model_outputs[0].name, "cpu")   # host output: see FaceSwapInsightFace.Run
         self.model_restoreformerpplus.run_with_iobinding(io_binding)
         ort_outs = io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]

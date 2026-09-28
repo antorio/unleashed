@@ -29,9 +29,7 @@ class Frame_Masking():
             model_path = resolve_relative_path('../models/Frame/isnet-general-use.onnx')
             self.model_masking = onnxruntime.InferenceSession(model_path, None, providers=unleashed.globals.execution_providers)
             self.model_inputs = self.model_masking.get_inputs()
-            model_outputs = self.model_masking.get_outputs()
-            self.io_binding = self.model_masking.io_binding()
-            self.io_binding.bind_output(model_outputs[0].name, self.devicename)
+            self.model_outputs = self.model_masking.get_outputs()
 
     def Run(self, temp_frame: Frame) -> Frame:
         # Pre process:Resize, BGR->RGB, float32 cast
@@ -44,9 +42,13 @@ class Frame_Masking():
         input_image = np.expand_dims(input_image, axis=0)
         input_image = input_image.astype('float32')
         
-        self.io_binding.bind_cpu_input(self.model_inputs[0].name, input_image)
-        self.model_masking.run_with_iobinding(self.io_binding)
-        ort_outs = self.io_binding.copy_outputs_to_cpu()
+        # a binding per call (one shared by the worker threads raced) and the
+        # output in host memory: see FaceSwapInsightFace.Run
+        io_binding = self.model_masking.io_binding()
+        io_binding.bind_cpu_input(self.model_inputs[0].name, input_image)
+        io_binding.bind_output(self.model_outputs[0].name, "cpu")
+        self.model_masking.run_with_iobinding(io_binding)
+        ort_outs = io_binding.copy_outputs_to_cpu()
         result = ort_outs[0][0]
         del ort_outs
         # Post process:squeeze, Sigmoid, Normarize, uint8 cast
@@ -66,6 +68,4 @@ class Frame_Masking():
     def Release(self):
         del self.model_masking
         self.model_masking = None
-        del self.io_binding
-        self.io_binding = None
 
