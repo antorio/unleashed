@@ -104,8 +104,6 @@ FACTORY = {
     'multi_angle': next(k for k, v in MULTI_ANGLE.items() if v == G.multi_angle_detection_mode),
     'upright': G.angle0_bonus, 'autorotate': True,
     'lmk_align': G.use_landmark_alignment, 'hi_lmk': G.use_hi_landmarker,
-    'hi_lmk_min': G.hi_landmarker_min_score, 'hi_lmk_level': G.hi_landmarker_level,
-    'hi_lmk_frontal': G.hi_landmarker_frontal_only,
     'lmk_gate': G.landmark_sanity_gate, 'lmk_gate_thr': G.landmark_sanity_threshold,
     'smoothing': G.landmark_smoothing, 'smoothing_strength': G.landmark_smoothing_strength,
     'smoothing_deadzone': G.landmark_smoothing_deadzone,
@@ -226,9 +224,6 @@ def apply_settings(settings=None):
     G.autorotate_faces = bool(v['autorotate'])
     G.use_landmark_alignment = bool(v['lmk_align'])
     G.use_hi_landmarker = bool(v['hi_lmk'])
-    G.hi_landmarker_min_score = float(v['hi_lmk_min'])
-    G.hi_landmarker_level = bool(v['hi_lmk_level'])
-    G.hi_landmarker_frontal_only = bool(v['hi_lmk_frontal'])
     G.landmark_sanity_gate = bool(v['lmk_gate'])
     G.landmark_sanity_threshold = float(v['lmk_gate_thr'])
     G.landmark_smoothing = bool(v['smoothing'])
@@ -434,7 +429,7 @@ def _add_source_file(path, name, extract_face_images, get_image_frame):
     if util.has_image_extension(path):
         found = extract_face_images(path, (False, 0))
         if not found:
-            return f'{name}: no face found, not added (try a lower Detection confidence)'
+            return f'{name}: no face found, not added (try a lower Min. confidence under Detection & tracking)'
         image = get_image_frame(path)
         for i, (face, crop) in enumerate(found):
             face.mask_offsets = (0, 0, 0, 0, 1, 20)

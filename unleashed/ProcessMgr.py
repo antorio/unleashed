@@ -102,7 +102,14 @@ def _crop_face_points(crop):
     big = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(128, 128, 128))
     try:
         analyser = get_face_analyser()
+        # the analyser runs 1k3d68 only when the alignment reads it (not with
+        # 2dfan4 on or 68-point alignment off): then a copy of its own, like
+        # face shape, so the analyser's modules -- and every face's landmarks
+        # and pose -- stay what the other settings make them
         landmarker = analyser.models.get('landmark_3d_68')
+        if landmarker is None:
+            from unleashed.face_shape import _landmark_model
+            landmarker = _landmark_model()
         if landmarker is None:
             return None
         with conditional_thread_semaphore():

@@ -166,6 +166,15 @@ button.secondary:hover { background: var(--button-secondary-background-fill-hove
 .fs-box .grid-wrap { overflow-y: auto !important; }
 #fs_left .head, #fs_settings .head { flex-wrap: nowrap !important; gap: 6px !important; }
 #fs_left .head > label, #fs_settings .head > label { min-width: 0 !important; flex: 1 1 auto !important; }
+/* sliders side by side in a row: the label on one line, and never narrower
+   than the head needs (label up to ~106 px, number box, reset) -- on a
+   narrower screen they stack, one per line, instead of cutting the label */
+#fs_left .row > .form > .block .head > label, #fs_settings .row > .form > .block .head > label {
+  white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+#fs_left .row > .form > .block .head > label *, #fs_settings .row > .form > .block .head > label * {
+  white-space: nowrap !important; }
+#fs_left .row > .form > .block:has(input[type=range]), #fs_settings .row > .form > .block:has(input[type=range]) {
+  min-width: min(206px, 100%) !important; }
 #fs_left .head .tab-like-container, #fs_settings .head .tab-like-container { flex: 0 0 auto !important; }
 /* room for 5 characters (0.125, 0.005 steps) next to the up/down arrows,
    which cover the last digit of a 48px box */

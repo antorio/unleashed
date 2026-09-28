@@ -60,14 +60,6 @@ occlusion_mask_soften = 0.0
 # and colour (Swap box; False = each pass simply feeds the previous one's
 # output, and the drift adds up -- see ProcessMgr.swap_passes_keeping_look).
 passes_keep_look = False
-# 2dfan4 (Detection & tracking): below this confidence its landmarks give way
-# to buffalo's 68 (0 = always 2dfan4, the old behaviour; FaceFusion uses 0.5).
-hi_landmarker_min_score = 0.0
-# 2dfan4 on a crop turned so the eyes are level (False = FaceFusion's upright crop)
-hi_landmarker_level = False
-# 2dfan4 only for faces looking roughly straight: buffalo's 68 take over as the
-# head turns up / down or sideways (a smooth blend, no switch)
-hi_landmarker_frontal_only = False
 
 # Identity strength, 0-1 (0 = off): push the source identity away from the
 # target's own identity before it conditions inswapper (see FaceSwapInsightFace).
