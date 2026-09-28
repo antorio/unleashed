@@ -51,7 +51,14 @@ class Expression_LivePortrait():
         from unleashed.utilities import tuned_execution_providers
         provs = tuned_execution_providers()
         print(f"[load] Creating LivePortrait '{name}' session  providers={provs}")
-        return onnxruntime.InferenceSession(path, None, providers=provs)
+        options = onnxruntime.SessionOptions()
+        # repeatable results (expression_deterministic): on the GPU the motion
+        # extractor's default kernels gave other outputs for the same input on
+        # every call (L4, 144 of 144, up to 0.008), so every ER frame came out
+        # a little different on every render, some frames a lot (up to 131
+        # levels); with this two renders were identical, at the same speed
+        options.use_deterministic_compute = bool(getattr(unleashed.globals, 'expression_deterministic', True))
+        return onnxruntime.InferenceSession(path, options, providers=provs)
 
     def Initialize(self, plugin_options: dict):
         if self.plugin_options is not None:

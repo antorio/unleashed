@@ -232,6 +232,10 @@ expression_debug = False
 # Serialise the LivePortrait sessions across threads (prevents cuDNN/illegal-memory
 # crashes when Max Threads is high). True is safe; False = max speed, fewer threads.
 expression_serialize = True
+# LivePortrait sessions with ONNX Runtime's deterministic compute: the same
+# input gives the same expression every time (see Expression_LivePortrait._load).
+# False = the kernels cuDNN picks, not repeatable on the GPU.
+expression_deterministic = True
 
 no_face_action = 1                  # default: Retry rotated
 
