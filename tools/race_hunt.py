@@ -1,21 +1,21 @@
-"""Which setup stops single frames from coming out different? (GPU, real renders)
+"""Do single frames still come out different, with and without the ONNX guard? (GPU, real renders)
 
 Colab cell (stop the Unleashed server first):
     %cd /content/unleashed
     !git pull -q
     !python tools/race_hunt.py
 
-ort_race could not make the models go wrong on their own (0 of 4800 calls
-per model, whichever way they were called), yet renders now and then still
-give one frame far off (100+ levels), mostly one of the first frames. This
-renders repeat_render's clip for real (ER off), 4 times inside each process
--- the first render starts the models cold, the other three reuse them
-warm -- with three processes at once, per setup:
+Since model outputs go straight to host memory, renders gave 2 odd frames
+in ~27 (before: 5 in 13); a first race_hunt (3 processes x 4 renders per
+setup) found 0 for the app and 0 with every session locked, cuDNN DEFAULT
+was 2.5x slower. The app now runs every ONNX session one call at a time
+(unleashed/onnx_guard.py). This renders repeat_render's clip for real
+(ER off), --rounds of --processes processes at once, --renders per process
+(the first one starts the models cold, the others reuse them warm), per
+setup:
 
-    app          the app as it is
-    locked       every ONNX session runs one call at a time
-    no_search    cuDNN's DEFAULT algorithm and no max workspace, instead of
-                 the EXHAUSTIVE search on the first calls
+    app          the app as it is (the guard on)
+    unlocked     the guard off (unleashed.globals.onnx_one_call_per_session)
 
 A frame's right picture is the one most renders of the setup agree on. For
 each setup it counts the frames that differ from it, cold and warm renders
@@ -28,7 +28,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from collections import Counter
 
@@ -39,8 +38,8 @@ _spec = importlib.util.spec_from_file_location('repeat_render', os.path.join(HER
 RR = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(RR)
 ROOT = RR.ROOT
-SETUPS = ['app', 'locked', 'no_search']
-PROCESSES, RENDERS = 3, 4
+SETUPS = ['app', 'unlocked']
+PROCESSES, RENDERS, ROUNDS = 3, 2, 4
 
 
 def child(label, setup, renders, out):
@@ -48,27 +47,9 @@ def child(label, setup, renders, out):
     sys.path.insert(0, ROOT)
     work = os.path.join(out, label)
     os.makedirs(work, exist_ok=True)
-    if setup == 'locked':                    # before insightface subclasses InferenceSession
-        import onnxruntime as ort
-        base = ort.InferenceSession
-
-        class OneAtATime(base):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self._one = threading.Lock()
-
-            def run(self, *args, **kwargs):
-                with self._one:
-                    return super().run(*args, **kwargs)
-
-            def run_with_iobinding(self, *args, **kwargs):
-                with self._one:
-                    return super().run_with_iobinding(*args, **kwargs)
-        ort.InferenceSession = OneAtATime
     import unleashed.globals as G
-    if setup == 'no_search':
-        G.cudnn_conv_algo_search = 'DEFAULT'
-        G.cudnn_conv_use_max_workspace = False
+    if setup == 'unlocked':
+        G.onnx_one_call_per_session = False
     from settings import Settings
     G.CFG = Settings('config.yaml')                          # never saved back
     G.CFG.config_file = os.path.join(work, 'config_copy.yaml')
@@ -133,7 +114,8 @@ def report(setup, labels, out):
     print(f'{setup}: cold renders {len(off["cold"])}/{total["cold"]} frames off, warm renders {len(off["warm"])}/{total["warm"]} frames off', flush=True)
     for line in (off['cold'] + off['warm'])[:12]:
         print(f'    {line}', flush=True)
-    return len(off['cold']) + len(off['warm'])
+    majority = {i: Counter(h for _, _, h in rows).most_common(1)[0][0] for i, rows in by_frame.items()}
+    return len(off['cold']) + len(off['warm']), majority
 
 
 def main():
@@ -142,7 +124,9 @@ def main():
     parser.add_argument('--setups', default=','.join(SETUPS))
     parser.add_argument('--child')
     parser.add_argument('--setup', default='app')
-    parser.add_argument('--renders', type=int, default=RENDERS)
+    parser.add_argument('--renders', type=int, default=RENDERS, help='renders per process')
+    parser.add_argument('--processes', type=int, default=PROCESSES, help='processes at once')
+    parser.add_argument('--rounds', type=int, default=ROUNDS)
     args = parser.parse_args()
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
@@ -157,21 +141,31 @@ def main():
     env = dict(os.environ, NO_ALBUMENTATIONS_UPDATE='1', PYTHONUNBUFFERED='1')
     summary = {}
     for setup in args.setups.split(','):
-        labels = [f'hunt_{setup}_{p + 1}' for p in range(PROCESSES)]
         t0 = time.time()
-        procs = []
-        for label in labels:
-            log = open(os.path.join(out, label + '.log'), 'w')
-            procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__), '--child', label, '--setup', setup,
-                                           '--renders', str(args.renders), '--out', out],
-                                          stdout=log, stderr=subprocess.STDOUT, env=env, cwd=ROOT))
-        codes = [p.wait() for p in procs]
-        done = [l for l, c in zip(labels, codes) if c == 0]
-        print(f'{setup}: {PROCESSES} processes x {args.renders} renders in {time.time() - t0:.0f} s'
-              + ('' if len(done) == len(labels) else f' ({len(labels) - len(done)} FAILED, see their .log)'), flush=True)
+        done, failed = [], 0
+        for rnd in range(args.rounds):
+            labels = [f'hunt_{setup}_{rnd + 1}_{p + 1}' for p in range(args.processes)]
+            procs = []
+            for label in labels:
+                log = open(os.path.join(out, label + '.log'), 'w')
+                procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__), '--child', label, '--setup', setup,
+                                               '--renders', str(args.renders), '--out', out],
+                                              stdout=log, stderr=subprocess.STDOUT, env=env, cwd=ROOT))
+            codes = [p.wait() for p in procs]
+            done += [l for l, c in zip(labels, codes) if c == 0]
+            failed += sum(c != 0 for c in codes)
+        print(f'{setup}: {args.rounds} rounds x {args.processes} processes x {args.renders} renders in {time.time() - t0:.0f} s'
+              + ('' if not failed else f' ({failed} FAILED, see their .log)'), flush=True)
         if done:
             summary[setup] = report(setup, done, out)
-    print('RESULT: ' + ', '.join(f'{s} {n} frames off' for s, n in summary.items()), flush=True)
+    if len(summary) > 1:                     # does the guard change the picture?
+        names = list(summary)
+        first = summary[names[0]][1]
+        for other in names[1:]:
+            theirs = summary[other][1]
+            same = sum(first.get(i) == h for i, h in theirs.items())
+            print(f'{names[0]} and {other} agree on the picture of {same} of {len(theirs)} frames', flush=True)
+    print('RESULT: ' + ', '.join(f'{s} {n} frames off' for s, (n, _) in summary.items()), flush=True)
 
 
 if __name__ == '__main__':

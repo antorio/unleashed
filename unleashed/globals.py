@@ -236,6 +236,9 @@ expression_serialize = True
 # input gives the same expression every time (see Expression_LivePortrait._load).
 # False = the kernels cuDNN picks, not repeatable on the GPU.
 expression_deterministic = True
+# Every ONNX Runtime session runs one call at a time across the render threads
+# (unleashed/onnx_guard.py). False = the old free-for-all, for A/B tests only.
+onnx_one_call_per_session = True
 
 no_face_action = 1                  # default: Retry rotated
 

@@ -40,6 +40,10 @@ def main():
     os.chdir(ROOT)
     sys.path.insert(0, ROOT)
     import unleashed.globals as G
+    # the app's guard (unleashed/onnx_guard.py) makes every GPU session take one
+    # call at a time; this test is about the calls WITHOUT it ('locked' has its
+    # own lock)
+    G.onnx_one_call_per_session = False
     from settings import Settings
     G.CFG = Settings('config.yaml')                          # read only
     from unleashed import core
