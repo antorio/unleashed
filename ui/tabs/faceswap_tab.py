@@ -25,6 +25,7 @@ import numpy as np
 import unleashed.globals
 import unleashed.utilities as util
 from unleashed.capturer import get_image_frame, get_video_frame
+from unleashed import colab
 from ui.tabs import faceswap_state as S
 
 G = unleashed.globals
@@ -293,9 +294,16 @@ def faceswap_tab():
                     C['btn_refresh'] = gr.Button("Refresh", size="sm", scale=0, min_width=80, elem_id="fs_refresh")
                 with gr.Row(equal_height=True, elem_id="run_bar"):
                     C['ready_md'] = gr.Markdown(S.readiness()[1], elem_id="ready_line")
+                    # only when the notebook cell that started the app can disconnect
+                    # (unleashed/colab.py); off at every start
+                    C['disconnect'] = gr.Checkbox(value=False, label="Disconnect Colab when done", container=False,
+                                                  scale=0, min_width=220, visible=colab.available(),
+                                                  elem_id="fs_disconnect")
                     C['btn_start'] = gr.Button("▶ Start", variant="primary", scale=0, min_width=120)
                     C['btn_stop'] = gr.Button("⏹ Stop", variant="secondary", scale=0, min_width=90,
                                               interactive=S.run_lock.locked())
+                    C['btn_keep'] = gr.Button("Stay connected", variant="secondary", scale=0, min_width=140,
+                                              visible=colab.pending())
                 C['status_md'] = gr.Markdown("", elem_id="status_line")
 
             # --------------------------------------------------------------- right: settings
@@ -505,12 +513,13 @@ def _wire(tick, er, er_col, engine, clip_col, enh, enh_col, lmk, lmk_col, sm, sm
     C['btn_paint_remove'].click(on_paint_remove, [tick], paint_out, **one)
 
     # run
-    run_inputs = set(settings.values()) | {tick}
+    run_inputs = set(settings.values()) | {tick, C['disconnect']}
     start = C['btn_start'].click(on_start_check, run_inputs, [C['btn_start'], C['btn_stop'], C['status_md']],
                                  show_progress="hidden", **INTERNAL)
     render = start.success(on_render, None, [C['status_md']], show_progress="full", **INTERNAL)
-    render.then(on_render_done, [tick], [C['btn_start'], C['btn_stop'], C['ready_md'], tick],
+    render.then(on_render_done, [tick], [C['btn_start'], C['btn_stop'], C['ready_md'], tick, C['btn_keep']],
                 show_progress="hidden", **INTERNAL)
+    C['btn_keep'].click(on_stay_connected, None, [C['btn_keep'], C['status_md']], queue=False, **INTERNAL)
     C['btn_stop'].click(on_stop, None, [C['btn_stop'], C['status_md']], queue=False, **INTERNAL)
 
     # defaults
@@ -524,7 +533,7 @@ def register_load(ui):
     """Page load: show the server's state (sources, targets, people, the last
     applied settings), not the build-time values."""
     keys = list(settings)
-    outputs = [settings[k] for k in keys] + refresh_outputs() + [C['src_path'], C['tgt_path']]
+    outputs = [settings[k] for k in keys] + refresh_outputs() + [C['src_path'], C['tgt_path'], C['btn_keep']]
 
     def on_load():
         _page_loaded()
@@ -532,7 +541,7 @@ def register_load(ui):
         # the page was built, so text typed right after the page opened stays
         start = S.path_start()
         path = start if start != C['src_path'].value else gr.skip()
-        return [S.values[k] for k in keys] + refresh_values() + [path, path]
+        return [S.values[k] for k in keys] + refresh_values() + [path, path, gr.Button(visible=colab.pending())]
     ui.load(on_load, None, outputs, show_progress="hidden", **INTERNAL).then(
         src_highlight, None, C['src_gal'], show_progress="hidden", **INTERNAL)
 
@@ -1064,6 +1073,7 @@ def _render_view(view, frame_num, swap_now):
 # ============================================================================ run
 
 _pending = {}
+_disconnect_after = False   # this run: "Disconnect Colab when done"
 _starting = 0.0             # when a Start was accepted (0: none); the render clears it
 
 
@@ -1098,8 +1108,10 @@ def on_start_check(data):
             raise gr.Error(f'WebM videos need the libvpx-vp9 codec (Video Codec is {codec}): change one of them in Settings')
         if codec.endswith('_nvenc') and not any('CUDA' in p for p in (G.execution_providers or [])):
             raise gr.Error(f'{codec} needs an NVIDIA GPU: choose libx264 (or libx265) as Video Codec in Settings')
-    global _starting
+    global _starting, _disconnect_after
     from unleashed import core
+    colab.cancel()                  # a new run: whatever the last one scheduled is off
+    _disconnect_after = bool(data.get(C['disconnect'])) and colab.available()
     _pending.clear()
     _pending.update(_vals(data))
     core.stop_requested = False
@@ -1152,7 +1164,7 @@ def on_render(progress=gr.Progress()):
                     else f'**Stopped** after {secs:.0f} s, before a file was finished.')
             if partial:
                 text += f' The interrupted part is left as `{partial[0]}` (no sound; the next run overwrites it).'
-            return gr.Markdown(text)
+            return gr.Markdown(text + _disconnect_note(entries, finished, stopped, out_dir))
         what = f'`{os.path.basename(finished[0])}`' if len(finished) == 1 else done
         text = f'**Done** in {secs:.0f} s: {what} saved in `{out_dir}`.'
         silent = [os.path.basename(e.finalname) for e in entries if getattr(e, 'completed', False) and getattr(e, 'no_audio', False)]
@@ -1162,7 +1174,7 @@ def on_render(progress=gr.Progress()):
                   if not getattr(e, 'completed', False) and getattr(e, 'failure', '')]
         if failed:
             text = text.replace('**Done**', '**Done, with problems**') + ' Not saved: ' + '; '.join(failed[:3]) + '.'
-        return gr.Markdown(text)
+        return gr.Markdown(text + _disconnect_note(entries, finished, stopped, out_dir))
     except Exception as e:
         traceback.print_exc()
         G.processing = False
@@ -1170,17 +1182,35 @@ def on_render(progress=gr.Progress()):
         text = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
         if 'FFMPEG encountered' in str(e):
             text = 'ffmpeg stopped while writing the video (codec / format / disk space?)'
-        return gr.Markdown(f'**Render failed:** {text[:300]} (details in the console)')
+        return gr.Markdown(f'**Render failed:** {text[:300]} (details in the console)'
+                           + (' Colab stays connected.' if _disconnect_after else ''))
     finally:
         core.stop_requested = False
         _starting = 0.0
         S.run_lock.release()
 
 
+def _disconnect_note(entries, finished, stopped, out_dir):
+    """ " Colab disconnects in 60 s ..." when the run asked for it and every
+    file is safely saved on Drive (unleashed/colab.py), else why it stays."""
+    if not _disconnect_after:
+        return ''
+    ok, why = colab.check(entries, finished, stopped, out_dir)
+    if ok and colab.schedule():
+        return (f' **Colab disconnects in {colab.DELAY} s**, after Google Drive has the files'
+                ' (*Stay connected* to keep it).')
+    return f' Colab stays connected: {why}.'
+
+
 def on_render_done(tick):
     running = _rendering()
     return [gr.Button(interactive=not running), gr.Button(interactive=running),
-            gr.Markdown(S.readiness()[1]), _next_tick(tick)]
+            gr.Markdown(S.readiness()[1]), _next_tick(tick), gr.Button(visible=colab.pending())]
+
+
+def on_stay_connected():
+    colab.cancel()
+    return [gr.Button(visible=False), gr.Markdown('Colab stays connected.')]
 
 
 def on_stop():
