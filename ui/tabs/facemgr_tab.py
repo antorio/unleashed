@@ -35,6 +35,7 @@ _undo = []              # [(label, [(position, entry), ...]) or (label, ('added'
 _next_id = 0
 _video_path = None
 current_video_fps = 0
+_video_total = 1
 _last_saved = None          # the .fsz written by the last Save (for 'Use in Face Swap')
 _saved_ids = None           # the photos (ids, in order) that Save wrote
 
@@ -65,16 +66,35 @@ def facemgr_tab():
         gr.Markdown("## Build a faceset\nA faceset (.fsz) holds photos of **one person**. The swap blends them into one "
                     "identity, so clean photos matter more than many: aim for 30–80 good photos of one look "
                     "(same age, hair, makeup), mostly frontal plus some turned to either side.")
+        # a player as wide as the tab: on a long video the frame slider in a side
+        # column moved dozens of frames per pixel. The slider is for getting
+        # close; the step buttons, the arrow keys and typing the frame number
+        # into the slider's box are for the exact frame.
+        with gr.Accordion("Faces from a video", open=False, elem_id="fm_video"):
+            in_video = gr.File(label="Drop a video here (or click) to pick frames from it", file_types=["video"],
+                               height=90)
+            with gr.Column(visible=False) as video_player:
+                video_frame = gr.Image(show_label=False, interactive=False, format="jpeg", height=380,
+                                       elem_id="fm_frame")
+                # step=1 and a maximum above the minimum: Gradio 5.9.1 fails on minimum == maximum
+                video_slider = gr.Slider(1, 2, value=1, step=1, label="Frame  (← → keys: 1 frame, with Shift: 10)",
+                                         elem_id="fm_frame_slider")
+                with gr.Row(equal_height=True, elem_id="fm_video_bar"):
+                    # handled in the page (ui/theme.py, unleashed_js), not as Gradio
+                    # events: those wait behind the frame requests, and a click
+                    # made while one is pending was dropped
+                    with gr.Row(elem_classes="fs-seg", elem_id="fm_steps"):
+                        for text, eid in (("−10", "fm_back10"), ("−1", "fm_back1"), ("+1", "fm_fwd1"), ("+10", "fm_fwd10")):
+                            gr.Button(text, size="sm", scale=0, min_width=52, elem_id=eid)
+                    video_info = gr.Markdown("", elem_id="fm_video_info")
+                    btn_add_frame = gr.Button("Add the faces in this frame", variant="primary", size="sm", scale=0,
+                                              min_width=230, interactive=False)
+                    btn_close_video = gr.Button("Close video", size="sm", scale=0, min_width=110)
         with gr.Row(equal_height=False):
             with gr.Column(scale=3, min_width=280):
                 gr.Markdown("### 1 · Add photos")
                 in_photos = gr.Files(label="Drop photos of the person (JPG / PNG) or facesets (.fsz)",
                                      file_count="multiple", file_types=["image", ".fsz"], height=150)
-                with gr.Accordion("Faces from a video", open=False):
-                    in_video = gr.File(label="Video", file_types=["video"], height=90)
-                    video_frame = gr.Image(label="Frame", interactive=False, format="jpeg", height=220)
-                    video_slider = gr.Slider(1, 1, value=1, step=1, label="Frame", interactive=False)
-                    btn_add_frame = gr.Button("Add the faces in this frame", interactive=False)
                 with gr.Accordion("Add a faceset", open=False):
                     in_fsz = gr.File(label="A faceset (.fsz): its photos are added to the list",
                                      file_types=[".fsz"], height=90)
@@ -118,9 +138,13 @@ def facemgr_tab():
     one = dict(concurrency_id='facemgr', concurrency_limit=1)
 
     in_photos.upload(fn=on_photos_added, inputs=[in_photos], outputs=[in_photos] + view, **one)
-    in_video.upload(fn=on_video_loaded, inputs=[in_video], outputs=[video_frame, video_slider, btn_add_frame], **one)
-    in_video.clear(fn=on_video_cleared, outputs=[video_frame, video_slider, btn_add_frame], **one)
-    video_slider.release(fn=on_video_frame, inputs=[video_slider], outputs=[video_frame], **one)
+    player = [in_video, video_player, video_frame, video_slider, video_info, btn_add_frame]
+    in_video.upload(fn=on_video_loaded, inputs=[in_video], outputs=player, **one)
+    btn_close_video.click(fn=on_video_cleared, outputs=player, **one)
+    # the frame follows the slider while it is dragged (only the newest request
+    # is served), and after a step button, an arrow key or a typed number
+    video_slider.change(fn=on_video_frame, inputs=[video_slider], outputs=[video_frame, video_info],
+                        trigger_mode="always_last", **one)
     btn_add_frame.click(fn=on_add_frame, inputs=[video_slider], outputs=view, **one)
     in_fsz.upload(fn=on_faceset_opened, inputs=[in_fsz], outputs=[in_fsz, save_name] + view, **one)
     gallery.select(fn=on_photo_selected, outputs=detail, **one)
@@ -398,41 +422,61 @@ def on_photos_added(files, progress=gr.Progress()):
     return [None] + _render()
 
 
+def _clock(seconds):
+    m, s = divmod(max(0.0, seconds), 60)
+    return f"{int(m)}:{s:05.2f}"
+
+
+def _video_info(frame_num):
+    """Where the frame is in the video, next to the step buttons."""
+    if _video_path is None:
+        return ''
+    fps = current_video_fps or 1
+    return (f"**{_clock((frame_num - 1) / fps)}** / {_clock(_video_total / fps)} · {fps:g} fps · "
+            f"{os.path.basename(_video_path)}")
+
+
 def on_video_loaded(video):
-    global _video_path, current_video_fps
+    global _video_path, current_video_fps, _video_total
     if video is None:
         return on_video_cleared()
     _video_path = video.name if hasattr(video, 'name') else str(video)
-    total = max(1, int(get_video_frame_total(_video_path) or 1))
+    _video_total = max(1, int(get_video_frame_total(_video_path) or 1))
     current_video_fps = util.detect_fps(_video_path) or 1
     frame = get_video_frame(_video_path, 1, exact=True)
-    return [gr.Image(value=None if frame is None else util.convert_to_gradio(frame)),
-            gr.Slider(value=1, minimum=1, maximum=total, step=1, interactive=True),
-            gr.Button(interactive=frame is not None)]
+    return [gr.File(visible=False), gr.Column(visible=True),
+            gr.Image(value=None if frame is None else util.convert_to_gradio(frame)),
+            gr.Slider(value=1, minimum=1, maximum=max(2, _video_total), step=1, interactive=_video_total > 1),
+            gr.Markdown(_video_info(1)), gr.Button(interactive=frame is not None)]
 
 
 def on_video_cleared():
     global _video_path
     _video_path = None
     # step=1: without it Gradio 5.9.1 fails on minimum == maximum ('math domain error')
-    return [gr.Image(value=None), gr.Slider(value=1, minimum=1, maximum=1, step=1, interactive=False), gr.Button(interactive=False)]
+    return [gr.File(value=None, visible=True), gr.Column(visible=False), gr.Image(value=None),
+            gr.Slider(value=1, minimum=1, maximum=2, step=1), gr.Markdown(''), gr.Button(interactive=False)]
 
 
 def on_video_frame(frame_num):
     if _video_path is None:
-        return gr.Image()
-    frame = get_video_frame(_video_path, int(frame_num), exact=True)
-    return gr.Image(value=None if frame is None else util.convert_to_gradio(frame))
+        return [gr.Image(), gr.Markdown()]
+    n = min(max(1, int(frame_num or 1)), _video_total)
+    frame = get_video_frame(_video_path, n, exact=True)
+    return [gr.Image(value=None if frame is None else util.convert_to_gradio(frame)), gr.Markdown(_video_info(n))]
 
 
 def on_add_frame(frame_num):
     if _video_path is None:
         return _render()
-    found = extract_face_images(_video_path, (True, int(frame_num)), 0.5)
+    n = min(max(1, int(frame_num or 1)), _video_total)
+    found = extract_face_images(_video_path, (True, n), 0.5)
     if not found:
         gr.Warning('No face found in this frame')
     for face, image in found:
-        _add(face, image, f"{os.path.basename(_video_path)}, frame {int(frame_num)}")
+        _add(face, image, f"{os.path.basename(_video_path)}, frame {n}")
+    if found:
+        gr.Info(f"{len(found)} face{'s' if len(found) != 1 else ''} from frame {n} added", duration=4)
     _refresh()
     return _render()
 

@@ -80,6 +80,18 @@ button.secondary:hover { background: var(--button-secondary-background-fill-hove
 #facemgr_gallery .caption-label { opacity: 1 !important; font-size: 12px !important; max-width: 94% !important; white-space: nowrap; text-overflow: ellipsis; }
 #facemgr_gallery .thumbnail-lg:hover .caption-label { opacity: 1 !important; }
 #facemgr_gallery .grid-wrap { min-height: 360px !important; max-height: 68vh !important; overflow-y: auto !important; }
+/* Face Management's video player: the frame box fits 6 digits, the bar under
+   the slider keeps its buttons on one line with the time between them */
+#fm_frame_slider .head { flex-wrap: nowrap !important; }
+#fm_frame_slider input[type="number"] { width: calc(7ch + 32px) !important; min-width: 0 !important; }
+#fm_video_bar { align-items: center !important; flex-wrap: nowrap !important; }
+#fm_video_bar > #fm_steps { flex: 0 0 auto !important; width: max-content !important; min-width: max-content !important;
+  gap: 0 !important; flex-wrap: nowrap !important; }
+#fm_steps > button { flex: 0 0 auto !important; min-width: 52px !important; }
+#fm_video_bar button { height: 28px !important; min-height: 28px !important; }
+#fm_video_info { flex: 1 1 auto !important; min-width: 0 !important; }
+#fm_video_info p { margin: 0 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums; color: var(--body-text-color-subdued); }
 #src_drop > button[tabindex], #tgt_files > button[tabindex] { height: 54px !important; min-height: 0 !important; }
 #src_drop > button .wrap, #tgt_files > button .wrap { min-height: 0 !important; padding: 6px !important; font-size: 0 !important; }
 #src_drop > button .wrap svg, #tgt_files > button .wrap svg { width: 18px !important; height: 18px !important; }
@@ -263,10 +275,37 @@ unleashed_js = """
 () => {
     // Face Swap: the arrow keys step the preview frame (like its ◀ ▶ buttons)
     // unless the focus is in a text field or a slider being dragged.
+    // Face Management's video player: the step buttons move the frame slider
+    // right here in the page (quick clicks add up); the slider's own change
+    // event then fetches the frame
+    const FM_STEPS = {fm_back10: -10, fm_back1: -1, fm_fwd1: 1, fm_fwd10: 10};
+    document.addEventListener('click', (e) => {
+        const b = e.target && e.target.closest && e.target.closest('#fm_back10, #fm_back1, #fm_fwd1, #fm_fwd10');
+        const el = b && document.querySelector('#fm_frame_slider input[type=range]');
+        if (!el) return;
+        const v = Math.max(Number(el.min) || 1, Math.min(Number(el.max), Math.round(Number(el.value)) + FM_STEPS[b.id]));
+        if (v !== Number(el.value)) {
+            el.value = v;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    });
+
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if (e.altKey || e.ctrlKey || e.metaKey) return;
         const el = document.activeElement;
+        // Face Management's video player (when it is showing): 1 frame, 10 with
+        // Shift, also while its slider has the focus; text fields keep their keys
+        const left = e.key === 'ArrowLeft';
+        const fm = document.getElementById(e.shiftKey ? (left ? 'fm_back10' : 'fm_fwd10') : (left ? 'fm_back1' : 'fm_fwd1'));
+        if (fm && fm.offsetParent) {
+            const slider = el && el.tagName === 'INPUT' && el.type === 'range' && el.closest && el.closest('#fm_frame_slider');
+            if (!slider && el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return;
+            e.preventDefault();
+            fm.click();
+            return;
+        }
+        if (e.shiftKey) return;
         // taken over as well: the frame slider (its own arrow stepping does not
         // refresh the preview) and the View radios (a click leaves the focus
         // there, and arrows would switch the view instead of the frame)
