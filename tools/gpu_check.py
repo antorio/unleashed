@@ -56,12 +56,18 @@ def main():
         print('RESULT: FAILED, the GPU is NOT used (see the error above). Render would run on the CPU.')
         sys.exit(1)
     gpu = gpu_session.run(None, {'x': x})[0]
-    diff = float(np.abs(gpu - cpu).max())
-    ok = diff < 1e-2
-    print(f'conv + matmul on the GPU vs CPU: max difference {diff:.2e}')
+    # the CUDA provider uses TF32 for convolutions / matrix products by default
+    # (about 3 significant digits), so compare relative to the output's size;
+    # with TF32 off it has to match the CPU closely
+    exact = ort.InferenceSession(model, providers=[('CUDAExecutionProvider', {'use_tf32': 0}), 'CPUExecutionProvider'])
+    scale = float(np.abs(cpu).max())
+    rel = float(np.abs(gpu - cpu).max()) / scale
+    rel_exact = float(np.abs(exact.run(None, {'x': x})[0] - cpu).max()) / scale
+    ok = rel < 1e-2 and rel_exact < 1e-4
+    print(f'conv + matmul on the GPU vs CPU, max difference relative to the largest value: '
+          f'{rel:.1e} (TF32, as the app runs), {rel_exact:.1e} (TF32 off)')
     print('RESULT: ' + ('OK, ONNX Runtime runs on the GPU' if ok else 'FAILED, the GPU gives wrong numbers'))
     sys.exit(0 if ok else 1)
-
 
 if __name__ == '__main__':
     main()
