@@ -13,7 +13,10 @@ psutil==5.9.6
 # skipped there; the app runs without it (only the Clip2Seg mask needs it).
 torch; platform_system != 'Darwin' or platform_machine != 'x86_64'
 torchvision; platform_system != 'Darwin' or platform_machine != 'x86_64'
-onnxruntime-gpu==1.21.0; sys_platform != 'darwin'
+# 1.27+ is built for CUDA 13, like Colab's torch since Oct 2026 (+cu130);
+# 1.21 needed CUDA 12 and ran every model on the CPU there (libcublasLt.so.12
+# missing). The CUDA 13 libraries come with torch (nvidia/cu13, nvidia/cudnn).
+onnxruntime-gpu==1.30.0; sys_platform != 'darwin'
 # macOS has no CUDA build -> plain onnxruntime (CPU / CoreML). Deliberately
 # UNPINNED: the newest available version differs by architecture (Apple
 # Silicon reaches 1.29, Intel Macs stop at 1.23.2), so any fixed pin breaks

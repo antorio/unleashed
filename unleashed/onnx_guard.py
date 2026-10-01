@@ -24,10 +24,32 @@ import onnxruntime
 _BASE = onnxruntime.InferenceSession
 
 
+_warned = []
+
+
+def _warn_if_gpu_missing(requested, applied):
+    """ONNX Runtime falls back to the CPU quietly when the GPU provider cannot
+    load (onnxruntime-gpu 1.21 on Colab after it moved to CUDA 13:
+    libcublasLt.so.12 missing); a render then takes
+    hours. Say so once, loudly."""
+    names = [p[0] if isinstance(p, (tuple, list)) else p for p in requested or []]
+    available = onnxruntime.get_available_providers()     # a CPU-only build (Mac) lists no CUDA
+    wanted = [n for n in names if n in available and n not in ('CPUExecutionProvider', 'TensorrtExecutionProvider')]
+    if _warned or not wanted or any(n in applied for n in wanted):
+        return
+    _warned.append(True)
+    bar = '!' * 78
+    print(f'\n{bar}\n!!! GPU NOT USED: {", ".join(wanted)} could not load, every model runs on the CPU.\n'
+          f'!!! See the error just above (a missing CUDA library?); check with: python tools/gpu_check.py\n'
+          f'{bar}\n', flush=True)
+
+
 class OneCallAtATime(_BASE):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        on_gpu = any(p != 'CPUExecutionProvider' for p in self.get_providers())
+        applied = self.get_providers()
+        _warn_if_gpu_missing(kwargs.get('providers', args[2] if len(args) > 2 else None), applied)
+        on_gpu = any(p != 'CPUExecutionProvider' for p in applied)
         self._one_call = threading.Lock() if on_gpu else None
 
     def _lock(self):
