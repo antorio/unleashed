@@ -24,10 +24,19 @@ broken):
     all_off        DEFAULT search, no max workspace, TF32 off
     cudnn_9.14     app options with cuDNN 9.14 (the version onnxruntime 1.30
                    is built with), installed apart in /content/cudnn_9.14
+    cudnn_9.14_default  the same with cuDNN search DEFAULT
+    cudnn_9.20 / cudnn_9.24  app options with those cuDNN versions (where
+                   between 9.14 and 9.27 does it break?)
+
+First run (7 Oct, T4): every setup "8/8 ok", but the probe looked at the
+providers before running, and onnxruntime's run() falls back to the CPU on a
+GPU error: the app / tf32_off / search_heur / no_workspace rows were the CPU
+(results bit-identical to it, CPU speed: inswapper ~800 ms). Fallback is now
+off, so a failure shows as an error.
 
 For every model: did the session stay on the GPU, does it run, are the
 numbers right (vs the CPU, relative to the largest value), how long a run
-takes. Writes only /content/cudnn_9.14 (pip --target, cuDNN only).
+takes. Writes only /content/cudnn_<version> (pip --target, cuDNN only).
 """
 import argparse
 import ctypes
@@ -51,6 +60,9 @@ SETUPS = {
     'no_workspace': ({'cudnn_conv_algo_search': 'EXHAUSTIVE', 'cudnn_conv_use_max_workspace': '0'}, None),
     'all_off': ({'cudnn_conv_algo_search': 'DEFAULT', 'cudnn_conv_use_max_workspace': '0', 'use_tf32': '0'}, None),
     'cudnn_9.14': (APP, CUDNN_OLD),
+    'cudnn_9.14_default': ({'cudnn_conv_algo_search': 'DEFAULT', 'cudnn_conv_use_max_workspace': '1'}, CUDNN_OLD),
+    'cudnn_9.20': (APP, '9.20.0.48'),
+    'cudnn_9.24': (APP, '9.24.1.1'),
 }
 
 
@@ -123,6 +135,9 @@ def child(setup):
         row = {'model': name}
         try:
             gpu = ort.InferenceSession(src, providers=[('CUDAExecutionProvider', dict(options)), 'CPUExecutionProvider'])
+            # run() would quietly switch the session to the CPU on a GPU error
+            # (onnxruntime's fallback; the first probe run counted those as ok)
+            gpu.disable_fallback()
             row['on_gpu'] = 'CUDAExecutionProvider' in gpu.get_providers()
             cpu = ort.InferenceSession(src, providers=['CPUExecutionProvider'])
             feeds = feeds_for(cpu, np.random.default_rng(0))
@@ -130,6 +145,7 @@ def child(setup):
             got = gpu.run(None, feeds)                        # first run: cuDNN search
             t0 = time.perf_counter()
             got = gpu.run(None, feeds)
+            row['on_gpu'] = 'CUDAExecutionProvider' in gpu.get_providers()
             row['ms'] = round((time.perf_counter() - t0) * 1000, 1)
             row['rel_err'] = max(float(np.abs(g - w).max()) / max(float(np.abs(w).max()), 1e-6) for g, w in zip(got, want))
             row['status'] = 'ok' if row['on_gpu'] and row['rel_err'] < 1e-2 else ('cpu' if not row['on_gpu'] else 'wrong')
@@ -138,7 +154,11 @@ def child(setup):
             row['status'] = 'error'
             row['error'] = 'HEURISTIC_QUERY_FAILED' if 'HEURISTIC_QUERY_FAILED' in msg else msg.splitlines()[0][:160]
         results.append(row)
-    print('RESULT_JSON ' + json.dumps({'setup': setup, 'torch': torch_version, 'ort': ort.__version__,
+    try:
+        cudnn_loaded = ctypes.CDLL('libcudnn.so.9').cudnnGetVersion()
+    except (OSError, AttributeError):
+        cudnn_loaded = None
+    print('RESULT_JSON ' + json.dumps({'setup': setup, 'cudnn': cudnn_loaded, 'torch': torch_version, 'ort': ort.__version__,
                                        'gpu': gpu_name, 'rows': results}), flush=True)
 
 
@@ -168,7 +188,7 @@ def main():
         data = json.loads(line[len('RESULT_JSON '):])
         if not summary:
             print(f"GPU {data['gpu']}, torch {data['torch']}, onnxruntime {data['ort']}", flush=True)
-        print(f'== {setup} ({time.time() - t0:.0f} s)', flush=True)
+        print(f"== {setup} ({time.time() - t0:.0f} s, cuDNN loaded: {data['cudnn']})", flush=True)
         for r in data['rows']:
             extra = (f" {r['ms']} ms, rel. diff {r['rel_err']:.1e}" if 'ms' in r else '') + \
                     (f" -- {r['error']}" if 'error' in r else '')
