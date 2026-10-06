@@ -24,24 +24,32 @@ import onnxruntime
 _BASE = onnxruntime.InferenceSession
 
 
-_warned = []
+import os
+
+_warned = set()
+_BAR = '!' * 78
+
+
+def _banner(kind, text):
+    """Print a loud warning once per kind."""
+    if kind in _warned:
+        return
+    _warned.add(kind)
+    print(f'\n{_BAR}\n{text}\n{_BAR}\n', flush=True)
 
 
 def _warn_if_gpu_missing(requested, applied):
     """ONNX Runtime falls back to the CPU quietly when the GPU provider cannot
     load (onnxruntime-gpu 1.21 on Colab after it moved to CUDA 13:
-    libcublasLt.so.12 missing); a render then takes
-    hours. Say so once, loudly."""
+    libcublasLt.so.12 missing); a render then takes hours. Say so once,
+    loudly."""
     names = [p[0] if isinstance(p, (tuple, list)) else p for p in requested or []]
     available = onnxruntime.get_available_providers()     # a CPU-only build (Mac) lists no CUDA
     wanted = [n for n in names if n in available and n not in ('CPUExecutionProvider', 'TensorrtExecutionProvider')]
-    if _warned or not wanted or any(n in applied for n in wanted):
+    if not wanted or any(n in applied for n in wanted):
         return
-    _warned.append(True)
-    bar = '!' * 78
-    print(f'\n{bar}\n!!! GPU NOT USED: {", ".join(wanted)} could not load, every model runs on the CPU.\n'
-          f'!!! See the error just above (a missing CUDA library?); check with: python tools/gpu_check.py\n'
-          f'{bar}\n', flush=True)
+    _banner('load', f'!!! GPU NOT USED: {", ".join(wanted)} could not load, every model runs on the CPU.\n'
+                    f'!!! See the error just above (a missing CUDA library?); check with: python tools/gpu_check.py')
 
 
 class OneCallAtATime(_BASE):
@@ -51,6 +59,17 @@ class OneCallAtATime(_BASE):
         _warn_if_gpu_missing(kwargs.get('providers', args[2] if len(args) > 2 else None), applied)
         on_gpu = any(p != 'CPUExecutionProvider' for p in applied)
         self._one_call = threading.Lock() if on_gpu else None
+
+    def set_providers(self, *args, **kwargs):
+        """run() calls this when the GPU fails mid-way (onnxruntime's fallback:
+        "EP Error ... Falling back to ['CPUExecutionProvider'] and retrying");
+        the model then quietly stays on the CPU. Seen on a T4 with cuDNN 9.27:
+        the face recognition model moved to the CPU, no banner."""
+        super().set_providers(*args, **kwargs)
+        if self._one_call is not None and all(p == 'CPUExecutionProvider' for p in self.get_providers()):
+            model = os.path.basename(getattr(self, '_model_path', None) or 'a model')
+            _banner('switched', f'!!! GPU NOT USED for {model}: it hit a GPU error and now runs on the CPU.\n'
+                                f'!!! See the "EP Error" just above; check with: python tools/gpu_check.py')
 
     def _lock(self):
         import unleashed.globals
