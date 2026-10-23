@@ -15,12 +15,14 @@ from unleashed.typing import Frame, Face
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from threading import Thread, Lock, Condition
+import contextlib
 from contextlib import contextmanager
 import time
 from queue import Queue, Full
 from tqdm import tqdm
 from unleashed.ffmpeg_writer import FFMPEG_VideoWriter
 import unleashed.globals
+from unleashed import onnx_guard
 
 
 
@@ -493,6 +495,10 @@ class ProcessMgr():
         if (align_68 and not hi_68) or shape_68:
             analysis_modules.insert(0, "landmark_3d_68")
         unleashed.globals.g_desired_face_analysis = analysis_modules
+        # the gender/age model (in the module set above, so the analyser is
+        # never rebuilt for it) runs only in the modes that read face.sex
+        # (swap_faces); face_util skips it otherwise
+        unleashed.globals.face_gender_needed = options.swap_mode in ('all_female', 'all_male')
         if options.swap_mode == "all_random":
             # don't modify original list
             self.input_face_datas = input_faces.copy()
@@ -595,7 +601,8 @@ class ProcessMgr():
                         frame = p.Run(frame)
                     resimg = frame
                 else:
-                    resimg = self.process_frame(temp_frame)
+                    with onnx_guard.working_on(os.path.basename(f)):
+                        resimg = self.process_frame(temp_frame)
                 if resimg is not None:
                     # Also let numpy write the file to support utf-8/16 filenames
                     cv2.imencode(f'.{unleashed.globals.CFG.output_image_format}',resimg)[1].tofile(target_map[f])
@@ -736,6 +743,9 @@ class ProcessMgr():
         if getattr(self, 'exp_smoother', None) is not None:
             self.exp_smoother.tracks = []
         self.er_order.reset()
+        # frame indices count from frame_start; GPU error messages name the
+        # video's frame number as the Face Swap tab shows it (1-based)
+        self._frame_number_base = frame_start + 1
 
         cap = cv2.VideoCapture(source_video)
         # endframe is a COUNT (get_video_frame_total), so the range processed is
@@ -911,8 +921,10 @@ class ProcessMgr():
     def process_frame(self, frame:Frame, frame_index=None):
         self._tls.frame_index = frame_index
         self._tls.er_faces_left = None          # set by swap_faces
+        label = None if frame_index is None else f'frame {getattr(self, "_frame_number_base", 1) + frame_index}'
         try:
-            result = self._process_frame(frame, frame_index)
+            with onnx_guard.working_on(label) if label else contextlib.nullcontext():
+                result = self._process_frame(frame, frame_index)
             # the painted keep-original mask: on the final upright frame (after a
             # rotated retry), against the original frame
             if result is not None and getattr(self.options, 'imagemask', None) is not None:

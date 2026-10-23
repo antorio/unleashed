@@ -1,4 +1,5 @@
 import threading
+import types
 from typing import Any
 import insightface
 
@@ -46,6 +47,8 @@ def get_face_analyser() -> Any:
                 FACE_ANALYSER = insightface.app.FaceAnalysis(
                     name="buffalo_l", root=model_path, providers=provs,allowed_modules=allowed_modules
                 )
+            if insightface.__version__ == '0.7.3':      # _analyse copies its get()
+                FACE_ANALYSER.get = types.MethodType(_analyse, FACE_ANALYSER)
             unleashed.globals.g_current_det_params = None
         # Detector settings are live: prepare() is re-run whenever the threshold
         # or the detection size changes, so moving the sliders takes effect
@@ -58,6 +61,34 @@ def get_face_analyser() -> Any:
                                   det_size=(det_size, det_size))
             unleashed.globals.g_current_det_params = params
     return FACE_ANALYSER
+
+
+def _analyse(self, img, max_num=0):
+    """FaceAnalysis.get of insightface 0.7.3 line for line, except that the
+    gender/age model runs only when a swap mode reads face.sex (All women /
+    All men: unleashed.globals.face_gender_needed). Every face of every frame
+    ran it; nothing else reads gender or age. It stays loaded (no rebuild
+    when the mode changes). Each model of the analysis works on its own, so
+    the other results are the same either way. Fewer runs of it also mean
+    fewer chances for its rare cuDNN errors (onnx_guard)."""
+    bboxes, kpss = self.det_model.detect(img, max_num=max_num, metric='default')
+    if bboxes.shape[0] == 0:
+        return []
+    skip = ('detection',) if getattr(unleashed.globals, 'face_gender_needed', False) else ('detection', 'genderage')
+    ret = []
+    for i in range(bboxes.shape[0]):
+        bbox = bboxes[i, 0:4]
+        det_score = bboxes[i, 4]
+        kps = None
+        if kpss is not None:
+            kps = kpss[i]
+        face = Face(bbox=bbox, kps=kps, det_score=det_score)
+        for taskname, model in self.models.items():
+            if taskname in skip:
+                continue
+            model.get(img, face)
+        ret.append(face)
+    return ret
 
 
 def get_first_face(frame: Frame) -> Any:
