@@ -1174,6 +1174,9 @@ def on_render(progress=gr.Progress()):
                   if not getattr(e, 'completed', False) and getattr(e, 'failure', '')]
         if failed:
             text = text.replace('**Done**', '**Done, with problems**') + ' Not saved: ' + '; '.join(failed[:3]) + '.'
+        if any(getattr(e, 'gpu_failed', []) for e in entries) and '**Done, with problems**' not in text:
+            text = text.replace('**Done**', '**Done, with problems**', 1)
+        text += _gpu_note(entries)
         return gr.Markdown(text + _disconnect_note(entries, finished, stopped, out_dir))
     except Exception as e:
         traceback.print_exc()
@@ -1188,6 +1191,21 @@ def on_render(progress=gr.Progress()):
         core.stop_requested = False
         _starting = 0.0
         S.run_lock.release()
+
+
+def _gpu_note(entries):
+    """GPU errors of the run (unleashed/onnx_guard.py): where a retry did not
+    help, the faces of that frame may be left unswapped."""
+    failed = [(os.path.basename(e.filename), w) for e in entries for w in getattr(e, 'gpu_failed', [])]
+    recovered = sum(getattr(e, 'gpu_recovered', 0) for e in entries)
+    if failed:
+        where = ', '.join(f'{w} of {n}' if len(entries) > 1 else w for n, w in failed[:5])
+        more = f' and {len(failed) - 5} more' if len(failed) > 5 else ''
+        return (f' **GPU error not recovered** at {where}{more}: check there, the faces may be left unswapped'
+                f' (details in the console).')
+    if recovered:
+        return f' {recovered} GPU error{"s" if recovered != 1 else ""} recovered by a retry.'
+    return ''
 
 
 def _disconnect_note(entries, finished, stopped, out_dir):

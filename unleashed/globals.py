@@ -239,6 +239,11 @@ expression_deterministic = True
 # Every ONNX Runtime session runs one call at a time across the render threads
 # (unleashed/onnx_guard.py). False = the old free-for-all, for A/B tests only.
 onnx_one_call_per_session = True
+# A call on the GPU that fails with a CUDA / cuDNN error is run again this many
+# times before the error counts (onnx_guard). Seen on L4 and T4 with
+# onnxruntime 1.30 + cuDNN 9.2x: now and then "CUDNN_STATUS_EXECUTION_FAILED"
+# in a face analysis model; that frame's faces were lost (frame not swapped).
+onnx_gpu_retries = 2
 
 no_face_action = 1                  # default: Retry rotated
 
@@ -250,6 +255,9 @@ g_current_det_params = None
 # Defaulting it here means source-face extraction uses the same analyser as
 # processing, so buffalo_l isn't rebuilt on the first swap.
 g_desired_face_analysis = ["landmark_3d_68", "landmark_2d_106", "detection", "recognition", "genderage"]
+# The gender/age model stays loaded but runs only when a swap mode reads it
+# (All women / All men; set by ProcessMgr.initialize, used by face_util).
+face_gender_needed = False
 
 
 INPUT_FACESETS = []

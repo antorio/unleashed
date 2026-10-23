@@ -31,6 +31,7 @@ from settings import Settings
 from unleashed.face_util import extract_face_images
 from unleashed.ProcessEntry import ProcessEntry
 from unleashed.ProcessMgr import ProcessMgr
+from unleashed import onnx_guard
 from unleashed.ProcessOptions import ProcessOptions
 from unleashed.capturer import get_video_frame_total
 
@@ -469,6 +470,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
 
     if(len(imagefiles) > 0):
         update_status('Processing image(s)')
+        gpu_before = onnx_guard.gpu_event_count()
         # a painted keep-original mask belongs to the file it was painted on
         plain = [f for f in imagefiles if getattr(f, 'imagemask', None) is None]
         masked = [f for f in imagefiles if getattr(f, 'imagemask', None) is not None]
@@ -481,9 +483,12 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
             process_mgr.set_manual_mask(f.imagemask)
             process_mgr.run_batch([f.filename], [f.finalname], unleashed.globals.execution_threads)
         process_mgr.set_manual_mask(None)
+        events = onnx_guard.gpu_events_since(gpu_before)
         for f in imagefiles:
             # "Drop the frame" writes no file for an image
             f.completed = fresh(f.finalname)
+            name = os.path.basename(f.filename)
+            note_gpu_errors(f, [e for e in events if e['where'] == name], name)
 
     if(len(videofiles) > 0):
         for index,v in enumerate(videofiles):
@@ -499,6 +504,7 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 update_status(f'Creating {os.path.basename(v.finalname)} with {fps} FPS...')
 
             start_processing = time()
+            gpu_before = onnx_guard.gpu_event_count()
             if hasattr(v, 'imagemask'):
                 process_mgr.set_manual_mask(v.imagemask)
             if is_streaming_only == False and unleashed.globals.keep_frames or not use_new_method:
@@ -590,10 +596,25 @@ def batch_process(output_method, files:list[ProcessEntry], use_new_method) -> No
                 if not getattr(v, 'failure', ''):
                     v.failure = 'nothing was written'
                 update_status(f'Failed processing {os.path.basename(v.finalname)}!')
+            note_gpu_errors(v, onnx_guard.gpu_events_since(gpu_before), os.path.basename(v.filename))
             elapsed_time = time() - start_processing
             average_fps = (v.endframe - v.startframe) / elapsed_time
             update_status(f'\nProcessing {os.path.basename(destination)} took {elapsed_time:.2f} secs, {average_fps:.2f} frames/s')
     end_processing('Finished')
+
+
+def note_gpu_errors(entry, events, name):
+    """The GPU errors (onnx_guard) while one file was processed: kept on the
+    entry for the Face Swap tab's report, summed up in the console."""
+    entry.gpu_recovered = sum(1 for e in events if e['recovered'])
+    # one place once (a frame's analysis runs again for the rotated tries)
+    entry.gpu_failed = list(dict.fromkeys(e['where'] or e['model'] for e in events if not e['recovered']))
+    if entry.gpu_failed:
+        print(f"[gpu] {name}: {len(entry.gpu_failed)} GPU error(s) NOT recovered by a retry, at "
+              f"{', '.join(entry.gpu_failed[:20])}{' ...' if len(entry.gpu_failed) > 20 else ''}: "
+              f"check those frames (faces there may be left unswapped)", flush=True)
+    elif entry.gpu_recovered:
+        print(f"[gpu] {name}: {entry.gpu_recovered} GPU error(s), all recovered by a retry", flush=True)
 
 
 def end_processing(msg:str):
