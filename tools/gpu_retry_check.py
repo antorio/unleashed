@@ -58,6 +58,23 @@ SCENARIOS = {
 TRANSIENT_CALLS = (2, 11, 29, 47)       # these calls of every model fail once
 
 
+def _cuda_works(onnxruntime):
+    """A session really runs on CUDA (a GPU build lists CUDA without a GPU)."""
+    if 'CUDAExecutionProvider' not in onnxruntime.get_available_providers():
+        return False
+    from onnx import TensorProto, helper
+    graph = helper.make_graph([helper.make_node('Relu', ['x'], ['y'])], 'probe',
+                              [helper.make_tensor_value_info('x', TensorProto.FLOAT, [1])],
+                              [helper.make_tensor_value_info('y', TensorProto.FLOAT, [1])])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 13)])
+    model.ir_version = 8
+    try:
+        session = onnxruntime.InferenceSession(model.SerializeToString(), providers=['CUDAExecutionProvider'])
+        return 'CUDAExecutionProvider' in session.get_providers()
+    except Exception:
+        return False
+
+
 def child(name, root, out):
     code, mode, er, inj = SCENARIOS[name]
     os.chdir(root)
@@ -75,7 +92,7 @@ def child(name, root, out):
     import onnxruntime
     from onnxruntime.capi import onnxruntime_inference_collection as OIC
     from onnxruntime.capi.onnxruntime_pybind11_state import EPFail, Fail
-    gpu = 'CUDAExecutionProvider' in onnxruntime.get_available_providers()
+    gpu = _cuda_works(onnxruntime)
     calls, injected = collections.Counter(), collections.Counter()
     lock = threading.Lock()
     guard = None
