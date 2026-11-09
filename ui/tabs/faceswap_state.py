@@ -81,7 +81,7 @@ def is_source_file(path):
 # and Face-aligned edges on
 FACTORY = {
     # faces to replace
-    'mode': 'Largest face', 'tolerance': G.distance_threshold,
+    'mode': 'Largest face', 'tolerance': G.distance_threshold, 'stay': G.selected_stay,
     # swap
     'resolution': '256px', 'passes': 1, 'passes_keep': G.passes_keep_look,
     'identity': G.identity_strength, 'face_shape': G.face_shape_strength,
@@ -194,6 +194,7 @@ def apply_settings(settings=None):
     v = values
     G.face_swap_mode = MODES[v['mode']]
     G.distance_threshold = float(v['tolerance'])
+    G.selected_stay = float(v['stay'])
     G.subsample_size = int(str(v['resolution']).lower().replace('px', '').strip())
     G.identity_strength = float(v['identity'])
     G.face_shape_strength = float(v['face_shape'])

@@ -244,6 +244,9 @@ def faceswap_tab():
                         C['people_x'] = gr.Textbox(elem_id="people_x", elem_classes="fs-hidden", show_label=False, container=False)
                         _s('tolerance', gr.Slider(0.01, 1.0, value=V['tolerance'], step=0.01,
                                                   label="Match tolerance (higher = looser)"))
+                        # video renders only: the last frames' choice holds a little (ProcessMgr.PickMemory)
+                        _s('stay', gr.Slider(0.0, 0.3, value=V['stay'], step=0.05,
+                                             label="Stay on the same person (video)"))
 
                 with gr.Accordion(f"Swap · {S.summary('swap')}", open=True, elem_classes="fs-box fs-last") as acc_swap:
                     with gr.Row():

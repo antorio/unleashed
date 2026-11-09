@@ -348,25 +348,145 @@ def match_selected_faces(target_faces, faces, threshold):
     pick of the same person took somebody else's face. When each pick has at
     most one face within the tolerance and no face is within it for two picks,
     the choice is the same as before."""
-    dist = [[float(compute_cosine_distance(tf.embedding, face.embedding)) for face in faces]
+    return assign_picks(pick_distances(target_faces, faces), target_faces, threshold)
+
+
+def pick_distances(target_faces, faces):
+    """[pick][face] cosine distances."""
+    return [[float(compute_cosine_distance(tf.embedding, face.embedding)) for face in faces]
             for tf in target_faces]
+
+
+def same_pick_person(target_faces, a, b, threshold):
+    """Picks a and b are the same person (picked from two frames)."""
+    return float(compute_cosine_distance(target_faces[a].embedding, target_faces[b].embedding)) \
+        <= min(threshold, SAME_PICK_DISTANCE)
+
+
+def assign_picks(dist, target_faces, threshold):
+    """match_selected_faces on given [pick][face] distances (PickMemory passes
+    distances with its bonus / penalty in them)."""
+    claimed = claim_faces(dist, target_faces, threshold)
+    return [claimed[ti] for ti in sorted(claimed)]
+
+
+def claim_faces(dist, target_faces, threshold):
+    """{pick index: face index} of assign_picks."""
+    n_faces = len(dist[0]) if dist else 0
     order = sorted((i for i in range(len(target_faces)) if dist[i]),
                    key=lambda i: (min(dist[i]), i))
     owner = {}                              # face index -> pick index
     for ti in order:
-        for fi in sorted(range(len(faces)), key=lambda f: (dist[ti][f], f)):
+        for fi in sorted(range(n_faces), key=lambda f: (dist[ti][f], f)):
             if dist[ti][fi] > threshold:
                 break
             other = owner.get(fi)
             if other is None:
                 owner[fi] = ti
                 break
-            same_person = float(compute_cosine_distance(target_faces[ti].embedding, target_faces[other].embedding)) \
-                <= min(threshold, SAME_PICK_DISTANCE)
-            if same_person:
+            if same_pick_person(target_faces, ti, other, threshold):
                 break
-    claimed = {ti: fi for fi, ti in owner.items()}
-    return [claimed[ti] for ti in sorted(claimed)]
+    return {ti: fi for fi, ti in owner.items()}
+
+
+def _box(face):
+    """(centre, size) of a face: size = the longer side of its box."""
+    x0, y0, x1, y1 = (float(v) for v in face.bbox[:4])
+    return np.array([(x0 + x1) / 2.0, (y0 + y1) / 2.0]), max(x1 - x0, y1 - y0, 1.0)
+
+
+class PickMemory:
+    """Specific people, "Stay on the same person" (unleashed.globals.selected_stay,
+    0 = off): the choice of one frame carries a little into the next ones.
+
+    Every frame used to be matched on its own: when the picked person's face
+    turned blurry, turned away or was covered for a moment, its distance rose
+    and a clearer, similar person won the frame (or was the only one within
+    the tolerance) -- the swap jumped to the other person and back, a flicker.
+    A face does not jump across the picture or change size from one frame to
+    the next, so for each picked person this remembers where its face was last
+    swapped. In the next frames, while that is fresh (MAX_GAP frames):
+      - the face found there (nearest centre within NEAR x its size, size
+        within SIZE_RATIO) counts `weight` closer -- only if it is within
+        tolerance + weight, so somebody clearly different is never forced in;
+      - every other face counts `weight` further for that person, so a
+        similar person is not swapped while the picked one is lost for a few
+        frames.
+    Then the usual rules choose (assign_picks). Picks of the same person share
+    one memory. A scene cut (the picture changes a lot from one frame to the
+    next) forgets everything: the choice is then the plain one again.
+
+    Video renders only, in frame order (FrameSequencer's ordered section);
+    previews, image batches, extracted frames and rotated retries match each
+    frame on its own as before. weight 0 = exactly match_selected_faces."""
+
+    MAX_GAP = 8             # frames a memory lasts without its face being swapped
+    NEAR = 0.6              # centre within this x the face size (per sqrt(frames since))
+    SIZE_RATIO = 1.4        # size within 1/1.4 .. 1.4 x
+    CUT_LEVEL = 30.0        # mean grey change of a 64x36 thumbnail that counts as a cut
+
+    def __init__(self):
+        self.memory = {}            # person (lowest pick index of it) -> (centre, size, frame index)
+        self.last_thumb = None
+        self.last_index = None
+        self.changed = 0            # frames where the memory changed the choice
+        self.cuts = 0
+
+    def reset(self):
+        self.__init__()
+
+    def _person(self, target_faces, ti, threshold):
+        for other in range(ti):
+            if same_pick_person(target_faces, ti, other, threshold):
+                return self._person(target_faces, other, threshold)
+        return ti
+
+    def _cut(self, frame, index):
+        thumb = cv2.cvtColor(cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA),
+                             cv2.COLOR_BGR2GRAY).astype(np.float32)
+        cut = (self.last_thumb is not None and self.last_index is not None and index == self.last_index + 1
+               and float(np.abs(thumb - self.last_thumb).mean()) > self.CUT_LEVEL)
+        self.last_thumb, self.last_index = thumb, index
+        return cut
+
+    def match(self, target_faces, faces, threshold, weight, frame, index):
+        """match_selected_faces for frame `index` of a video, with the memory."""
+        if self._cut(frame, index):
+            self.memory.clear()
+            self.cuts += 1
+        dist = pick_distances(target_faces, faces)
+        plain = assign_picks(dist, target_faces, threshold)
+        if not faces:
+            return plain
+        boxes = [_box(f) for f in faces]
+        person = [self._person(target_faces, ti, threshold) for ti in range(len(target_faces))]
+        adjusted = [row[:] for row in dist]
+        for ti in range(len(target_faces)):
+            mem = self.memory.get(person[ti])
+            if mem is None or not 0 < index - mem[2] <= self.MAX_GAP:
+                continue
+            centre, size, seen = mem
+            reach = self.NEAR * size * np.sqrt(index - seen)
+            near, near_d = None, None
+            for fi, (c, s) in enumerate(boxes):
+                d = float(np.hypot(*(c - centre)))
+                if d <= reach and 1 / self.SIZE_RATIO <= s / size <= self.SIZE_RATIO and (near is None or d < near_d):
+                    near, near_d = fi, d
+            for fi in range(len(faces)):
+                if fi == near:
+                    if dist[ti][fi] <= threshold + weight:
+                        adjusted[ti][fi] = dist[ti][fi] - weight
+                else:
+                    adjusted[ti][fi] = dist[ti][fi] + weight
+        claimed = claim_faces(adjusted, target_faces, threshold)
+        picked = [claimed[ti] for ti in sorted(claimed)]
+        if picked != plain:
+            self.changed += 1
+        for ti, fi in claimed.items():
+            mem = self.memory.get(person[ti])
+            if mem is None or index >= mem[2]:          # a late frame never overwrites a newer one
+                self.memory[person[ti]] = (*boxes[fi], index)
+        return picked
 
 
 class ProcessMgr():
@@ -468,6 +588,8 @@ class ProcessMgr():
         )
         # running identity / face-shape averages for the likeness options
         self.target_tracks = TargetTracks()
+        # Specific people: the last frames' choice ("Stay on the same person")
+        self.pick_memory = PickMemory()
         # NOTE: the One-Euro smoothing of the alignment matrix M (batch 2/3) was
         # REMOVED entirely: even with a pixel deadband it produced visible
         # micro-jitter on footage whose alignment was already steady (user
@@ -736,6 +858,8 @@ class ProcessMgr():
             self.stabilizer.reset()
         if getattr(self, 'target_tracks', None) is not None:
             self.target_tracks.reset()
+        if getattr(self, 'pick_memory', None) is not None:
+            self.pick_memory.reset()
         if getattr(self, 'sequencer', None) is not None:
             self.sequencer.reset()
         # the Expression Restorer's smoother: this video only (it carried the
@@ -864,6 +988,11 @@ class ProcessMgr():
                 print("[finish] WARNING: a worker crashed and a thread did not exit cleanly (leaked as daemon)")
 
         cap.release()
+        memory = getattr(self, 'pick_memory', None)
+        if memory is not None and self.options.swap_mode == 'selected' \
+                and float(getattr(unleashed.globals, 'selected_stay', 0.0) or 0.0) > 0.0:
+            print(f'[stay] {memory.changed} of {frame_count} frames: the memory of the last frames changed '
+                  f'which face was swapped; {memory.cuts} scene cut(s)', flush=True)
         if self.output_to_file:
             try:
                 self.videowriter.close()
@@ -1085,6 +1214,13 @@ class ProcessMgr():
                 self.sequencer.pass_turn(frame_index)
                 return NO_FACE_DETECTED, frame
 
+            # Specific people with "Stay on the same person": matched in frame
+            # order, with the memory of the last frames (PickMemory)
+            stay = float(getattr(unleashed.globals, 'selected_stay', 0.0) or 0.0)
+            remembered = (self.options.swap_mode == "selected" and stay > 0.0 and self.video_mode
+                          and frame_index is not None and not rotated_retry
+                          and len(self.input_face_datas) > 0 and getattr(self, 'pick_memory', None) is not None)
+            picked = None
             # ordered: see note above
             with self.sequencer.in_order(frame_index):
                 refine_faces_landmark68(frame, faces)
@@ -1092,6 +1228,9 @@ class ProcessMgr():
                     self.stabilizer.stabilize(faces)
                 if tracks_on:
                     self.target_tracks.update(faces, identity=track_identity, shape=track_shape)
+                if remembered:
+                    picked = self.pick_memory.match(self.target_face_datas, faces,
+                                                    self.options.face_distance_threshold, stay, frame, frame_index)
             if self.options.swap_mode == "all":
                 self._expect_faces(len(faces))
                 for face in faces:
@@ -1121,8 +1260,9 @@ class ProcessMgr():
                 if idx >= len(self.input_face_datas):
                     idx = 0
                 if len(self.input_face_datas) > 0:
-                    picked = match_selected_faces(self.target_face_datas, faces,
-                                                  self.options.face_distance_threshold)
+                    if picked is None:
+                        picked = match_selected_faces(self.target_face_datas, faces,
+                                                      self.options.face_distance_threshold)
                     self._expect_faces(len(picked))
                     for fi in picked:
                         temp_frame = self.process_face(idx, faces[fi], temp_frame)

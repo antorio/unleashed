@@ -73,6 +73,11 @@ blend_ratio = 0.5
 # Specific people: max cosine distance for a face to count as a picked person
 # (user default 0.8, 26 Sep; was 0.65). ProcessMgr.match_selected_faces.
 distance_threshold = 0.8
+# Specific people, "Stay on the same person" (0 = off): in a video render the
+# face swapped in the last frames counts this much closer, the others this
+# much further, so one blurry / turned frame does not move the swap to a
+# similar person (ProcessMgr.PickMemory).
+selected_stay = 0.0
 # Face detector settings (live -- see get_face_analyser).
 # det_thresh: confidence a detection must reach to be accepted. insightface's
 # default is 0.5; faces sitting right at the threshold flicker in and out
