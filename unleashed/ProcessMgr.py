@@ -415,6 +415,11 @@ class PickMemory:
     Then the usual rules choose (assign_picks). Picks of the same person share
     one memory. A scene cut (the picture changes a lot from one frame to the
     next) forgets everything: the choice is then the plain one again.
+    The memory follows the face it keeps, but it lasts only MAX_GAP frames
+    from the last frame in which that face was within the tolerance on its
+    own: a face that is kept only thanks to the memory cannot keep it alive
+    (else a similar person stepping into the picked one's place, without a
+    cut, was swapped for good).
 
     Video renders only, in frame order (FrameSequencer's ordered section);
     previews, image batches, extracted frames and rotated retries match each
@@ -426,7 +431,9 @@ class PickMemory:
     CUT_LEVEL = 30.0        # mean grey change of a 64x36 thumbnail that counts as a cut
 
     def __init__(self):
-        self.memory = {}            # person (lowest pick index of it) -> (centre, size, frame index)
+        # person (lowest pick index of it) -> (centre, size, frame of that place,
+        # last frame in which it was within the tolerance on its own)
+        self.memory = {}
         self.last_thumb = None
         self.last_index = None
         self.changed = 0            # frames where the memory changed the choice
@@ -463,9 +470,9 @@ class PickMemory:
         adjusted = [row[:] for row in dist]
         for ti in range(len(target_faces)):
             mem = self.memory.get(person[ti])
-            if mem is None or not 0 < index - mem[2] <= self.MAX_GAP:
+            if mem is None or not 0 < index - mem[3] <= self.MAX_GAP:
                 continue
-            centre, size, seen = mem
+            centre, size, seen, _ = mem
             reach = self.NEAR * size * np.sqrt(index - seen)
             near, near_d = None, None
             for fi, (c, s) in enumerate(boxes):
@@ -484,8 +491,13 @@ class PickMemory:
             self.changed += 1
         for ti, fi in claimed.items():
             mem = self.memory.get(person[ti])
-            if mem is None or index >= mem[2]:          # a late frame never overwrites a newer one
-                self.memory[person[ti]] = (*boxes[fi], index)
+            if mem is not None and index < mem[2]:      # a late frame never overwrites a newer one
+                continue
+            on_its_own = dist[ti][fi] <= threshold
+            if mem is None and not on_its_own:
+                continue
+            confirmed = index if on_its_own else mem[3]
+            self.memory[person[ti]] = (*boxes[fi], index, confirmed)
         return picked
 
 
