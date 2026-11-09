@@ -247,6 +247,9 @@ def faceswap_tab():
                         # video renders only: the last frames' choice holds a little (ProcessMgr.PickMemory)
                         _s('stay', gr.Slider(0.0, 0.3, value=V['stay'], step=0.05,
                                              label="Stay on the same person (video)"))
+                        # a reflection / a screen: more than one face per picked person
+                        _s('every_face', gr.Checkbox(value=V['every_face'],
+                                                     label="Every face of this person (mirror, screen)"))
 
                 with gr.Accordion(f"Swap · {S.summary('swap')}", open=True, elem_classes="fs-box fs-last") as acc_swap:
                     with gr.Row():

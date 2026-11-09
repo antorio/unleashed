@@ -82,6 +82,7 @@ def is_source_file(path):
 FACTORY = {
     # faces to replace
     'mode': 'Largest face', 'tolerance': G.distance_threshold, 'stay': G.selected_stay,
+    'every_face': G.selected_every_face,
     # swap
     'resolution': '256px', 'passes': 1, 'passes_keep': G.passes_keep_look,
     'identity': G.identity_strength, 'face_shape': G.face_shape_strength,
@@ -195,6 +196,7 @@ def apply_settings(settings=None):
     G.face_swap_mode = MODES[v['mode']]
     G.distance_threshold = float(v['tolerance'])
     G.selected_stay = float(v['stay'])
+    G.selected_every_face = bool(v['every_face'])
     G.subsample_size = int(str(v['resolution']).lower().replace('px', '').strip())
     G.identity_strength = float(v['identity'])
     G.face_shape_strength = float(v['face_shape'])

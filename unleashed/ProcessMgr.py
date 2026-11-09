@@ -327,7 +327,7 @@ class FrameOrderGate():
 SAME_PICK_DISTANCE = 0.65
 
 
-def match_selected_faces(target_faces, faces, threshold):
+def match_selected_faces(target_faces, faces, threshold, every_face=False):
     """Specific people: which detected faces to swap, as indices into `faces`.
 
     Each pick (a picked person) takes the detected face closest to it within
@@ -347,8 +347,17 @@ def match_selected_faces(target_faces, faces, threshold):
     clip at 0.8: the wrong person in 29 of 29 frames; 0 at 0.65), and a second
     pick of the same person took somebody else's face. When each pick has at
     most one face within the tolerance and no face is within it for two picks,
-    the choice is the same as before."""
-    return assign_picks(pick_distances(target_faces, faces), target_faces, threshold)
+    the choice is the same as before.
+
+    every_face ("Every face of this person", mirror / screen): after that,
+    the faces no pick took go to their closest pick too when within
+    EVERY_FACE_DISTANCE (extra_faces); they come after the picks' own faces."""
+    dist = pick_distances(target_faces, faces)
+    claimed = claim_faces(dist, target_faces, threshold)
+    picked = [claimed[ti] for ti in sorted(claimed)]
+    if every_face:
+        picked += sorted(extra_faces(dist, claimed, threshold))
+    return picked
 
 
 def pick_distances(target_faces, faces):
@@ -389,6 +398,32 @@ def claim_faces(dist, target_faces, threshold):
     return {ti: fi for fi, ti in owner.items()}
 
 
+# "Every face of this person": a face beyond the picks' own (a reflection in a
+# mirror, the person on a screen) is swapped only when this close to a pick --
+# stricter than the tolerance, so a similar other person (0.79 from the picked
+# one in the test scene; different people >= 0.78 in the earlier scenes) is not
+# taken for one more face of the picked person.
+EVERY_FACE_DISTANCE = 0.65
+
+
+def extra_faces(dist, claimed, threshold, remembered=()):
+    """{face index: pick index}: the faces no pick took whose closest pick is
+    within min(threshold, EVERY_FACE_DISTANCE) -- within the tolerance itself
+    for a (face, pick) in `remembered`: a face at a place where PickMemory
+    still knows a face of that person."""
+    limit = min(threshold, EVERY_FACE_DISTANCE)
+    taken = set(claimed.values())
+    n_faces = len(dist[0]) if dist else 0
+    extras = {}
+    for fi in range(n_faces):
+        if fi in taken:
+            continue
+        ti = min(range(len(dist)), key=lambda t: (dist[t][fi], t))
+        if dist[ti][fi] <= (threshold if (fi, ti) in remembered else limit):
+            extras[fi] = ti
+    return extras
+
+
 def _box(face):
     """(centre, size) of a face: size = the longer side of its box."""
     x0, y0, x1, y1 = (float(v) for v in face.bbox[:4])
@@ -421,6 +456,13 @@ class PickMemory:
     (else a similar person stepping into the picked one's place, without a
     cut, was swapped for good).
 
+    With "Every face of this person" a person can have several faces in a
+    frame (a reflection): it then remembers each of their places (up to
+    MAX_PLACES); the faces at any of them count closer, the others further,
+    and a face at one of them needs only the tolerance to be swapped as one
+    more face of the person (not EVERY_FACE_DISTANCE) -- if the face there was
+    within EVERY_FACE_DISTANCE on its own in the last MAX_GAP frames.
+
     Video renders only, in frame order (FrameSequencer's ordered section);
     previews, image batches, extracted frames and rotated retries match each
     frame on its own as before. weight 0 = exactly match_selected_faces."""
@@ -429,10 +471,12 @@ class PickMemory:
     NEAR = 0.6              # centre within this x the face size (per sqrt(frames since))
     SIZE_RATIO = 1.4        # size within 1/1.4 .. 1.4 x
     CUT_LEVEL = 30.0        # mean grey change of a 64x36 thumbnail that counts as a cut
+    MAX_PLACES = 4          # places remembered per person (every face of this person)
 
     def __init__(self):
-        # person (lowest pick index of it) -> (centre, size, frame of that place,
-        # last frame in which it was within the tolerance on its own)
+        # person (lowest pick index of it) -> [(centre, size, frame of that place,
+        # last frame in which it was within the tolerance on its own), ...]:
+        # one place, or with every face of this person up to MAX_PLACES
         self.memory = {}
         self.last_thumb = None
         self.last_index = None
@@ -456,48 +500,87 @@ class PickMemory:
         self.last_thumb, self.last_index = thumb, index
         return cut
 
-    def match(self, target_faces, faces, threshold, weight, frame, index):
+    def _near(self, place, boxes, index):
+        """The face at a remembered place: nearest centre within reach, size
+        within SIZE_RATIO; None if there is none."""
+        centre, size, seen = place[0], place[1], place[2]
+        reach = self.NEAR * size * np.sqrt(index - seen)
+        near, near_d = None, None
+        for fi, (c, s) in enumerate(boxes):
+            d = float(np.hypot(*(c - centre)))
+            if d <= reach and 1 / self.SIZE_RATIO <= s / size <= self.SIZE_RATIO and (near is None or d < near_d):
+                near, near_d = fi, d
+        return near
+
+    def match(self, target_faces, faces, threshold, weight, frame, index, every_face=False):
         """match_selected_faces for frame `index` of a video, with the memory."""
         if self._cut(frame, index):
             self.memory.clear()
             self.cuts += 1
         dist = pick_distances(target_faces, faces)
-        plain = assign_picks(dist, target_faces, threshold)
+        plain = match_selected_faces(target_faces, faces, threshold, every_face)
         if not faces:
             return plain
         boxes = [_box(f) for f in faces]
         person = [self._person(target_faces, ti, threshold) for ti in range(len(target_faces))]
         adjusted = [row[:] for row in dist]
+        remembered = set()          # (face, pick): a face at a clearly known place of that person
         for ti in range(len(target_faces)):
-            mem = self.memory.get(person[ti])
-            if mem is None or not 0 < index - mem[3] <= self.MAX_GAP:
+            fresh = [p for p in self.memory.get(person[ti], []) if 0 < index - p[3] <= self.MAX_GAP]
+            if not fresh:
                 continue
-            centre, size, seen, _ = mem
-            reach = self.NEAR * size * np.sqrt(index - seen)
-            near, near_d = None, None
-            for fi, (c, s) in enumerate(boxes):
-                d = float(np.hypot(*(c - centre)))
-                if d <= reach and 1 / self.SIZE_RATIO <= s / size <= self.SIZE_RATIO and (near is None or d < near_d):
-                    near, near_d = fi, d
+            near = {self._near(p, boxes, index) for p in fresh} - {None}
+            # a place whose face was recently within EVERY_FACE_DISTANCE on its
+            # own (p[4]); one only ever within the looser tolerance (a similar
+            # person swapped while the picked one was away) does not count
+            remembered |= {(self._near(p, boxes, index), ti) for p in fresh
+                           if len(p) > 4 and p[4] is not None and 0 < index - p[4] <= self.MAX_GAP}
             for fi in range(len(faces)):
-                if fi == near:
+                if fi in near:
                     if dist[ti][fi] <= threshold + weight:
                         adjusted[ti][fi] = dist[ti][fi] - weight
                 else:
                     adjusted[ti][fi] = dist[ti][fi] + weight
         claimed = claim_faces(adjusted, target_faces, threshold)
         picked = [claimed[ti] for ti in sorted(claimed)]
+        extras = extra_faces(adjusted, claimed, threshold, remembered) if every_face else {}
+        picked += sorted(extras)
         if picked != plain:
             self.changed += 1
-        for ti, fi in claimed.items():
-            mem = self.memory.get(person[ti])
-            if mem is not None and index < mem[2]:      # a late frame never overwrites a newer one
+        if not every_face:
+            for ti, fi in claimed.items():
+                mem = self.memory.get(person[ti])
+                mem = mem[0] if mem else None
+                if mem is not None and index < mem[2]:  # a late frame never overwrites a newer one
+                    continue
+                on_its_own = dist[ti][fi] <= threshold
+                if mem is None and not on_its_own:
+                    continue
+                confirmed = index if on_its_own else mem[3]
+                self.memory[person[ti]] = [(*boxes[fi], index, confirmed)]
+            return picked
+        # every face of this person: each face taken updates the place it
+        # continues (or starts a new one when within the limits on its own)
+        limit = min(threshold, EVERY_FACE_DISTANCE)
+        taken = [(ti, fi, dist[ti][fi] <= threshold) for ti, fi in claimed.items()] + \
+                [(ti, fi, dist[ti][fi] <= limit) for fi, ti in extras.items()]
+        clear = {fi for ti, fi, _ in taken if dist[ti][fi] <= limit}
+        for who in {person[ti] for ti, _, _ in taken}:
+            places = list(self.memory.get(who, []))
+            if any(index < p[2] for p in places):                   # a late frame
                 continue
-            on_its_own = dist[ti][fi] <= threshold
-            if mem is None and not on_its_own:
-                continue
-            confirmed = index if on_its_own else mem[3]
-            self.memory[person[ti]] = (*boxes[fi], index, confirmed)
+            kept = []
+            for ti, fi, on_its_own in taken:
+                if person[ti] != who:
+                    continue
+                k = next((k for k, p in enumerate(places) if self._near(p, [boxes[fi]], index) == 0), None)
+                if k is None and not on_its_own:
+                    continue
+                prev = places.pop(k) if k is not None else None
+                strong = index if fi in clear else (prev[4] if prev is not None and len(prev) > 4 else None)
+                kept.append((*boxes[fi], index, index if on_its_own else prev[3], strong))
+            others = [p for p in places if index - p[3] <= self.MAX_GAP]
+            self.memory[who] = (kept + sorted(others, key=lambda p: -p[2]))[:self.MAX_PLACES]
         return picked
 
 
@@ -1229,6 +1312,7 @@ class ProcessMgr():
             # Specific people with "Stay on the same person": matched in frame
             # order, with the memory of the last frames (PickMemory)
             stay = float(getattr(unleashed.globals, 'selected_stay', 0.0) or 0.0)
+            every_face = bool(getattr(unleashed.globals, 'selected_every_face', False))
             remembered = (self.options.swap_mode == "selected" and stay > 0.0 and self.video_mode
                           and frame_index is not None and not rotated_retry
                           and len(self.input_face_datas) > 0 and getattr(self, 'pick_memory', None) is not None)
@@ -1242,7 +1326,8 @@ class ProcessMgr():
                     self.target_tracks.update(faces, identity=track_identity, shape=track_shape)
                 if remembered:
                     picked = self.pick_memory.match(self.target_face_datas, faces,
-                                                    self.options.face_distance_threshold, stay, frame, frame_index)
+                                                    self.options.face_distance_threshold, stay, frame, frame_index,
+                                                    every_face)
             if self.options.swap_mode == "all":
                 self._expect_faces(len(faces))
                 for face in faces:
@@ -1274,7 +1359,7 @@ class ProcessMgr():
                 if len(self.input_face_datas) > 0:
                     if picked is None:
                         picked = match_selected_faces(self.target_face_datas, faces,
-                                                      self.options.face_distance_threshold)
+                                                      self.options.face_distance_threshold, every_face)
                     self._expect_faces(len(picked))
                     for fi in picked:
                         temp_frame = self.process_face(idx, faces[fi], temp_frame)

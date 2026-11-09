@@ -78,6 +78,10 @@ distance_threshold = 0.8
 # much further, so one blurry / turned frame does not move the swap to a
 # similar person (ProcessMgr.PickMemory).
 selected_stay = 0.0
+# Specific people, "Every face of this person" (mirror, screen): a picked
+# person may take more than one face per frame -- the faces no pick took that
+# are within ProcessMgr.EVERY_FACE_DISTANCE (0.65) of it. Off = one face each.
+selected_every_face = False
 # Face detector settings (live -- see get_face_analyser).
 # det_thresh: confidence a detection must reach to be accepted. insightface's
 # default is 0.5; faces sitting right at the threshold flicker in and out
