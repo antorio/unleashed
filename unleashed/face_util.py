@@ -257,8 +257,76 @@ def get_first_face_multi(frame: Frame, mode='fallback', angles=None) -> Any:
     return max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
 
 
-def extract_face_images(source_filename, video_info, extra_padding=-1.0, use_multi_angle=False):
+def _largest(faces):
+    return max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])) if faces else None
+
+
+def _points_disagree(face, image):
+    """How far the detector's 5 points lie from the same 5 points of the
+    68-point model, per face size. The 68-point model works on the face's box
+    without turning it and was trained on upright faces: on a face that is
+    sideways or upside down in the picture it lands far off, the detector's
+    points do not (they follow the face). None without 68 points."""
+    lm = getattr(face, 'landmark_3d_68', None)
+    if lm is None:
+        try:
+            from unleashed.face_shape import _landmark_model
+            model = _landmark_model()
+            lm = model.get(image, face) if model is not None else None
+        except Exception:
+            lm = None
+    kps = getattr(face, 'kps', None)
+    if lm is None or kps is None:
+        return None
+    p5 = landmark_68_to_5(np.asarray(lm))[:, :2]
+    size = max(float(face.bbox[2] - face.bbox[0]), float(face.bbox[3] - face.bbox[1]), 1.0)
+    return float(np.linalg.norm(p5 - np.asarray(kps)[:5, :2], axis=1).mean() / size)
+
+
+_TURN_CODES = {1: cv2.ROTATE_90_CLOCKWISE, 2: cv2.ROTATE_180, 3: cv2.ROTATE_90_COUNTERCLOCKWISE}
+UPRIGHT_AGREE = 0.03    # points this close (per face size): the face is upright, nothing else is tried
+TURN_GAIN = 0.75        # a turn must bring the disagreement below this x the current one
+
+
+def turn_upright(image, faces):
+    """A photo held sideways or upside down, turned so its (largest) face stands
+    upright: (image, faces, quarter turns clockwise).
+
+    Measured on t1.jpg's six people, each turned 4 ways (24 photos): the
+    disagreement of the detector's 5 points with the 68-point model
+    (_points_disagree) was smallest for the right turn 24/24 -- 0.017-0.020 of
+    the face size the right way up, >= 0.040 any other way (median gap
+    0.077). The eye/mouth points alone got 20/24 (an upside-down face turned
+    to the side fooled them), the length of the recognition vector tied for
+    one person in every turn.
+
+    A largest face with disagreement <= UPRIGHT_AGREE is upright: the photo
+    stays as it is and nothing else is detected. Otherwise (or with no face)
+    the three turns are tried; the photo is turned to the one with the
+    smallest disagreement if that is below TURN_GAIN x the current one."""
+    faces = faces or []
+    main = _largest(faces)
+    current = _points_disagree(main, image) if main is not None else None
+    if current is not None and current <= UPRIGHT_AGREE:
+        return image, faces, 0
+    best = (current * TURN_GAIN if current is not None else float('inf'), 0, image, faces)
+    for turns, code in _TURN_CODES.items():
+        turned = cv2.rotate(image, code)
+        found = get_all_faces(turned) or []
+        d = _points_disagree(_largest(found), turned) if found else None
+        if d is not None and d < best[0]:
+            best = (d, turns, turned, found)
+    return best[2], best[3], best[1]
+
+
+def extract_face_images(source_filename, video_info, extra_padding=-1.0, use_multi_angle=False,
+                        upright=False, info=None):
     """Collect the faces of an image / video frame for the UI pickers.
+
+    upright: source photos (Face Management, Face Swap sources) held sideways
+    or upside down are turned first (turn_upright), so the faceset's photos,
+    its checks (head turn, mouth) and face shape see upright faces. info, a
+    dict, gets 'turns': the quarter turns clockwise that were applied.
 
     use_multi_angle: run the SAME rotated-detection passes the swap uses. Off by
     default -- source photos and the face manager are upright, so trying four
@@ -286,6 +354,10 @@ def extract_face_images(source_filename, video_info, extra_padding=-1.0, use_mul
             mode=getattr(unleashed.globals, 'multi_angle_detection_mode', 'fallback'))
     else:
         faces = get_all_faces(source_image)
+        if upright and source_image is not None:
+            source_image, faces, turns = turn_upright(source_image, faces)
+            if info is not None:
+                info['turns'] = turns
     if faces is None:
         return face_data
 

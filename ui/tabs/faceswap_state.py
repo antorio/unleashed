@@ -417,6 +417,12 @@ def add_sources(paths, progress=None):
     return messages
 
 
+def turn_quarters(image, turns):
+    """image turned `turns` quarter turns clockwise (face_util.turn_upright)."""
+    codes = {1: cv2.ROTATE_90_CLOCKWISE, 2: cv2.ROTATE_180, 3: cv2.ROTATE_90_COUNTERCLOCKWISE}
+    return image if image is None or turns % 4 == 0 else cv2.rotate(image, codes[turns % 4])
+
+
 def _add_source_file(path, name, extract_face_images, get_image_frame):
     """One photo (every face becomes a source) or .fsz (one source); the
     message for it."""
@@ -430,10 +436,14 @@ def _add_source_file(path, name, extract_face_images, get_image_frame):
         source_captions.append(caption)
         return msg or f'{name}: faceset added ({caption.split(" · ")[-1]})'
     if util.has_image_extension(path):
-        found = extract_face_images(path, (False, 0))
+        # a photo held sideways / upside down is turned upright first; its
+        # reference image (face shape reads it with the face's coordinates)
+        # is turned the same way
+        turned = {}
+        found = extract_face_images(path, (False, 0), upright=True, info=turned)
         if not found:
             return f'{name}: no face found, not added (try a lower Min. confidence under Detection & tracking)'
-        image = get_image_frame(path)
+        image = turn_quarters(get_image_frame(path), turned.get('turns', 0))
         for i, (face, crop) in enumerate(found):
             face.mask_offsets = (0, 0, 0, 0, 1, 20)
             face_set = FaceSet()
@@ -444,8 +454,9 @@ def _add_source_file(path, name, extract_face_images, get_image_frame):
             G.INPUT_FACESETS.append(face_set)
             ui.globals.ui_input_thumbs.append(util.convert_to_gradio(crop))
             source_captions.append(name if len(found) == 1 else f'{name} · face {i + 1}')
-        return (f'{name}: 1 face added' if len(found) == 1 else
-                f'{name}: {len(found)} faces added as {len(found)} sources')
+        note = ' (photo turned upright)' if turned.get('turns') else ''
+        return (f'{name}: 1 face added{note}' if len(found) == 1 else
+                f'{name}: {len(found)} faces added as {len(found)} sources{note}')
     return f'{name}: not a photo or faceset, skipped'
 
 
