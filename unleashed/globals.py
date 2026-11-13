@@ -61,9 +61,10 @@ occlusion_mask_soften = 0.0
 # output, and the drift adds up -- see ProcessMgr.swap_passes_keeping_look).
 passes_keep_look = False
 
-# Identity strength, 0-1 (0 = off): push the source identity away from the
-# target's own identity before it conditions inswapper (see FaceSwapInsightFace).
-identity_strength = 0.0
+# Identity boost (Swap box): swap once, read what inswapper made and push the
+# source vector past that miss (FaceSwapInsightFace.boosted_latent). One extra
+# 128 swap + one recognition per face; off = exactly the plain swap.
+identity_boost = False
 # Face shape from the source, 0-1 (0 = off): warp the target's jaw / chin toward
 # the source's before swapping (see unleashed/face_shape.py). Runs buffalo_l's 68-pt
 # 3D landmark model on every face while on.

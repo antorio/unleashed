@@ -681,7 +681,7 @@ class ProcessMgr():
             strength=unleashed.globals.landmark_smoothing_strength,
             deadzone_frac=getattr(unleashed.globals, 'landmark_smoothing_deadzone', 0.0)
         )
-        # running identity / face-shape averages for the likeness options
+        # running face-shape averages (Source jaw & chin)
         self.target_tracks = TargetTracks()
         # Specific people: the last frames' choice ("Stay on the same person")
         self.pick_memory = PickMemory()
@@ -1260,12 +1260,11 @@ class ProcessMgr():
             and self.stabilizer is not None
             and not rotated_retry
         )
-        # identity / face-shape averages along each face's track: video only,
+        # face-shape averages along each face's track: video only,
         # independent of landmark smoothing
-        track_identity = float(getattr(unleashed.globals, 'identity_strength', 0.0) or 0.0) > 0.0
         track_shape = float(getattr(unleashed.globals, 'face_shape_strength', 0.0) or 0.0) > 0.0
         tracks_on = (self.video_mode and getattr(self, 'target_tracks', None) is not None
-                     and (track_identity or track_shape) and not rotated_retry)
+                     and track_shape and not rotated_retry)
         mode = unleashed.globals.multi_angle_detection_mode
         angles = unleashed.globals.multi_angle_angles
 
@@ -1292,7 +1291,7 @@ class ProcessMgr():
                 if smoothing_on:
                     self.stabilizer.stabilize([face])
                 if tracks_on:
-                    self.target_tracks.update([face], identity=track_identity, shape=track_shape)
+                    self.target_tracks.update([face])
 
             num_faces_found += 1
             self._expect_faces(1)
@@ -1323,7 +1322,7 @@ class ProcessMgr():
                 if smoothing_on:
                     self.stabilizer.stabilize(faces)
                 if tracks_on:
-                    self.target_tracks.update(faces, identity=track_identity, shape=track_shape)
+                    self.target_tracks.update(faces)
                 if remembered:
                     picked = self.pick_memory.match(self.target_face_datas, faces,
                                                     self.options.face_distance_threshold, stay, frame, frame_index,
@@ -1649,11 +1648,12 @@ class ProcessMgr():
                                                                subsample_total, subsample_size)
                 else:
                     swap_result_frames = []
-                    subsample_frames = self.implode_pixel_boost(aligned_img, model_output_size, subsample_total)
+                    subsample_frames = list(self.implode_pixel_boost(aligned_img, model_output_size, subsample_total))
+                    latent = self.identity_boost_latent(p, inputface, subsample_frames[0])
                     for sliced_frame in subsample_frames:
                         for _ in range(0,self.options.num_swap_steps):
                             sliced_frame = self.prepare_crop_frame(sliced_frame)
-                            sliced_frame = p.Run(inputface, target_face, sliced_frame)
+                            sliced_frame = p.Run(inputface, target_face, sliced_frame, latent)
                             sliced_frame = self.normalize_swap_frame(sliced_frame)
                         swap_result_frames.append(sliced_frame)
                     fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
@@ -2066,10 +2066,12 @@ class ProcessMgr():
         at passes 2-5, brightness +1.4..+2.3, likeness 0.903 / 0.902 at passes
         2 / 3 (without: 0.906 / 0.906). The first pass is exactly the usual one."""
         slices = list(self.implode_pixel_boost(aligned_img, model_size, total))
+        latent = self.identity_boost_latent(p, inputface, slices[0])
         steps = self.options.num_swap_steps
         full, ref = None, None
         for k in range(steps):
-            slices = [self.normalize_swap_frame(p.Run(inputface, target_face, self.prepare_crop_frame(s))) for s in slices]
+            slices = [self.normalize_swap_frame(p.Run(inputface, target_face, self.prepare_crop_frame(s), latent))
+                      for s in slices]
             full = self.explode_pixel_boost(slices, model_size, total, size)
             if k == 0:
                 ref = _crop_look(full)
@@ -2078,6 +2080,18 @@ class ProcessMgr():
                 if k < steps - 1:
                     slices = list(self.implode_pixel_boost(full, model_size, total))
         return full
+
+
+    def identity_boost_latent(self, p, inputface, first_slice):
+        """Identity boost: the boosted source input for this face, computed ONCE
+        from the first (128) slice of the TARGET crop and reused for every
+        pixel-boost slice and pass (per slice it cost one extra swap per slice
+        for the same gain). None when off: Run then uses the plain source
+        input, exactly as without the option."""
+        if not getattr(unleashed.globals, 'identity_boost', False) or inputface is None \
+                or not hasattr(p, 'boosted_latent'):
+            return None
+        return p.boosted_latent(inputface, self.prepare_crop_frame(first_slice))
 
 
     def prepare_crop_frame(self, swap_frame):

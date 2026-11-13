@@ -143,16 +143,17 @@ class LandmarkStabilizer:
 
 
 class TargetTracks:
-    """Per-face running averages over a video that the likeness options need:
-    the target's identity embedding (identity strength) and its face shape in
-    the reference frame (face shape). Both describe the PERSON, not the frame,
-    so averaging them along the face's track keeps the effects from flickering.
+    """Per-face running average over a video of the target's face shape in the
+    reference frame (Source jaw & chin). It describes the PERSON, not the frame,
+    so averaging it along the face's track keeps the effect from flickering.
+    The identity embedding is tracked too, only to notice a cut to another
+    person (the track then starts over).
 
     Separate from LandmarkStabilizer on purpose: it never touches landmarks,
     and it runs whether landmark smoothing is on or not. Must be fed frames in
     order (it is called inside the frame sequencer's ordered section).
 
-    Writes face['identity_ref'], face['shape_canon'] and face['shape_gate'].
+    Writes face['shape_canon'] and face['shape_gate'].
     """
 
     def __init__(self, match_frac: float = 0.6, max_age: int = 8,
@@ -176,7 +177,7 @@ class TargetTracks:
                 best_d, best = d, t
         return best
 
-    def update(self, faces, identity=True, shape=True):
+    def update(self, faces, shape=True):
         if not faces:
             return faces
         canonical = landmarks3d = gate_of = None
@@ -218,8 +219,6 @@ class TargetTracks:
                         g = gate_of(L3)
                         t['gate'] = g if t['gate'] is None else 0.7 * t['gate'] + 0.3 * g
                 try:
-                    if identity and t['emb'] is not None:
-                        f['identity_ref'] = t['emb'].copy()
                     if shape and t['shape'] is not None:
                         f['shape_canon'] = t['shape'].copy()
                         f['shape_gate'] = t['gate']

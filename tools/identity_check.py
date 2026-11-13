@@ -1,9 +1,12 @@
 """Does "Identity boost" make the swap look more like the source? (measurement)
 
-    python tools/identity_check.py [--out DIR] [--boosts 0,0.25,0.5,0.75,1]
+    python tools/identity_check.py [--out DIR] [--boosts 0,1]
 
-The user sees the opposite of what it is for: with the boost the result looks
-LESS like the source. This swaps every ordered pair of the six people in
+(0 = Identity boost off, anything else = on.) Written when the user saw the
+opposite of what the boost was for: the old formula (push away from the
+target's identity, strength 0-1) made the result LESS like the source; it was
+replaced by the feedback boost (FaceSwapInsightFace.boosted_latent). This
+swaps every ordered pair of the six people in
 insightface's sample t1.jpg (source photo = person i, target photo = person
 j; 30 pairs) through the app's own render path (faceswap_state settings ->
 core.batch_process_regular, Largest face, factory settings) at each boost,
@@ -74,7 +77,7 @@ def crop(img, face, size=400):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--out', default=os.path.join(ROOT, 'temp', 'identity_check'))
-    parser.add_argument('--boosts', default='0,0.25,0.5,0.75,1')
+    parser.add_argument('--boosts', default='0,1')
     args = parser.parse_args()
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
@@ -134,7 +137,7 @@ def main():
             G.INPUT_FACESETS.clear()
             S.add_sources([source])
             S.values.update(S.FACTORY)
-            S.values.update({'mode': 'Largest face', 'identity': b})
+            S.values.update({'mode': 'Largest face', 'identity_boost': b > 0})
             S.apply_settings()
             v = dict(S.values)
             plugin, _ = S.mask_plugin()

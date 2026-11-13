@@ -260,7 +260,8 @@ def faceswap_tab():
                         _s('passes_keep', gr.Checkbox(value=V['passes_keep'],
                                                       label="Keep the first pass's size and colour"))
                     with gr.Row():
-                        _s('identity', gr.Slider(0.0, 1.0, value=V['identity'], step=0.05, label="Identity boost"))
+                        _s('identity_boost', gr.Checkbox(value=V['identity_boost'], label="Identity boost"))
+                    with gr.Row():
                         _s('face_shape', gr.Slider(0.0, 1.0, value=V['face_shape'], step=0.05, label="Source jaw & chin"))
 
             # --------------------------------------------------------------- centre: preview on top, controls below
