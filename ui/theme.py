@@ -88,6 +88,12 @@ button.secondary:hover { background: var(--button-secondary-background-fill-hove
 #fm_video_bar > #fm_steps { flex: 0 0 auto !important; width: max-content !important; min-width: max-content !important;
   gap: 0 !important; flex-wrap: nowrap !important; }
 #fm_steps > button { flex: 0 0 auto !important; min-width: 52px !important; }
+/* Face Management, selected photo: two equal columns of buttons that line up.
+   Remove (variant stop) has no border, Keep / Turn have 1 px: a flex item
+   with basis 0 is never narrower than its padding + border, so they came out
+   206 / 208 px wide, and 40 / 38 px high. Each takes half the row (gap 16). */
+#fm_selected .row > button { flex: 0 0 calc(50% - 8px) !important; min-width: 0 !important; }
+#fm_selected .row > button.lg { min-height: 40px !important; }
 #fm_video_bar button { height: 28px !important; min-height: 28px !important; }
 #fm_video_info { flex: 1 1 auto !important; min-width: 0 !important; }
 #fm_video_info p { margin: 0 !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

@@ -19,7 +19,7 @@ import gradio as gr
 import unleashed.utilities as util
 import unleashed.globals
 from unleashed import faceset_check
-from unleashed.face_util import extract_face_images, get_all_faces
+from unleashed.face_util import extract_face_images, get_all_faces, get_all_faces_multi
 from unleashed.capturer import get_video_frame, get_video_frame_total
 
 # The photos in the faceset, in order. Each: {'id': int, 'image': the 512 BGR
@@ -122,19 +122,25 @@ def facemgr_tab():
                     btn_start_over = gr.Button("Start over", size="sm")
                     btn_confirm_clear = gr.Button("Yes, remove all photos", variant="stop", size="sm", visible=False)
                     btn_cancel_clear = gr.Button("Cancel", size="sm", visible=False)
-            with gr.Column(scale=3, min_width=280):
+            with gr.Column(scale=3, min_width=280, elem_id="fm_selected"):
                 gr.Markdown("### Selected photo")
                 sel_image = gr.Image(show_label=False, interactive=False, height=260, format="jpeg")
                 sel_info = gr.Markdown("Click a photo to see its details.")
+                # two equal columns in both rows (by default the width followed
+                # each label: 206 vs 208 px, and the rows did not line up)
                 with gr.Row():
-                    btn_remove = gr.Button("Remove this photo", variant="stop", interactive=False)
-                    btn_keep = gr.Button("Keep anyway", interactive=False)
+                    btn_remove = gr.Button("Remove photo", variant="stop", interactive=False, scale=1, min_width=100)
+                    btn_keep = gr.Button("Keep anyway", interactive=False, scale=1, min_width=100)
+                # for a photo the automatic upright turn got wrong
+                with gr.Row():
+                    btn_turn_left = gr.Button("⟲ Turn left", size="sm", interactive=False, scale=1, min_width=100)
+                    btn_turn_right = gr.Button("⟳ Turn right", size="sm", interactive=False, scale=1, min_width=100)
                 dup_image = gr.Image(label="Nearly identical to", interactive=False, height=150, format="jpeg",
                                      visible=False)
 
-    view = [gallery, summary, btn_remove_flagged, btn_undo, btn_save, sel_image, sel_info, btn_remove, btn_keep, dup_image,
-            btn_use_in_swap]
-    detail = [sel_image, sel_info, btn_remove, btn_keep, dup_image]
+    view = [gallery, summary, btn_remove_flagged, btn_undo, btn_save, sel_image, sel_info, btn_remove, btn_keep,
+            btn_turn_left, btn_turn_right, dup_image, btn_use_in_swap]
+    detail = [sel_image, sel_info, btn_remove, btn_keep, btn_turn_left, btn_turn_right, dup_image]
     one = dict(concurrency_id='facemgr', concurrency_limit=1)
 
     in_photos.upload(fn=on_photos_added, inputs=[in_photos], outputs=[in_photos] + view, **one)
@@ -151,6 +157,8 @@ def facemgr_tab():
     show.change(fn=on_show_changed, inputs=[show], outputs=view, **one)
     btn_remove.click(fn=on_remove_selected, outputs=view, **one)
     btn_keep.click(fn=on_keep_selected, outputs=view, **one)
+    btn_turn_left.click(fn=lambda: on_turn_selected(3), outputs=view, **one)
+    btn_turn_right.click(fn=lambda: on_turn_selected(1), outputs=view, **one)
     btn_remove_flagged.click(fn=on_remove_flagged, outputs=view, **one)
     btn_undo.click(fn=on_undo, outputs=view, **one)
     btn_start_over.click(fn=lambda: [gr.Button(visible=False), gr.Button(visible=True), gr.Button(visible=True)],
@@ -284,6 +292,7 @@ def _detail():
     if e is None:
         return [gr.Image(value=None), gr.Markdown("Click a photo to see its details."),
                 gr.Button(interactive=False), gr.Button(value="Keep anyway", interactive=False),
+                gr.Button(interactive=False), gr.Button(interactive=False),
                 gr.Image(value=None, visible=False)]
     r, m = _rows.get(e['id'], {}), e['metrics']
     lines = []
@@ -323,6 +332,7 @@ def _detail():
     return [gr.Image(value=cv2.cvtColor(e['image'], cv2.COLOR_BGR2RGB)), gr.Markdown(text),
             gr.Button(interactive=True),
             gr.Button(value="Undo keep" if e['kept'] else "Keep anyway", interactive=bool(keys)),
+            gr.Button(interactive=True), gr.Button(interactive=True),
             gr.Image(value=cv2.cvtColor(dup['image'], cv2.COLOR_BGR2RGB), visible=True) if dup else gr.Image(value=None, visible=False)]
 
 
@@ -399,7 +409,7 @@ def on_photos_added(files, progress=gr.Progress()):
         _add_faceset_file(path, progress)
     files = [p for p in paths if not p.lower().endswith('.fsz')]
     known = {e['hash'] for e in entries if e['hash']}
-    skipped, no_face, added = [], [], 0
+    skipped, no_face, added, turned = [], [], 0, []
     for k, path in enumerate(files):
         progress(k / len(files), desc="Adding photos")
         with open(path, 'rb') as fh:
@@ -408,13 +418,19 @@ def on_photos_added(files, progress=gr.Progress()):
             skipped.append(os.path.basename(path))
             continue
         known.add(digest)
-        found = extract_face_images(path, (False, 0), 0.5)
+        info = {}
+        found = extract_face_images(path, (False, 0), 0.5, upright=True, info=info)
         if not found:
             no_face.append(os.path.basename(path))
+        elif info.get('turns'):
+            turned.append(os.path.basename(path))
         for face, image in found:
             _add(face, image, os.path.basename(path), digest)
             added += 1
     _refresh()
+    if turned:
+        gr.Info(f"Turned upright (held sideways or upside down): {', '.join(turned[:5])}"
+                f"{f' and {len(turned) - 5} more' if len(turned) > 5 else ''}")
     if no_face:
         gr.Warning(f"No face found in {len(no_face)} photo(s): {', '.join(no_face[:5])}")
     if skipped:
@@ -470,9 +486,12 @@ def on_add_frame(frame_num):
     if _video_path is None:
         return _render()
     n = min(max(1, int(frame_num or 1)), _video_total)
-    found = extract_face_images(_video_path, (True, n), 0.5)
+    info = {}
+    found = extract_face_images(_video_path, (True, n), 0.5, upright=True, info=info)
     if not found:
         gr.Warning('No face found in this frame')
+    elif info.get('turns'):
+        gr.Info('The frame was turned upright (the video is sideways or upside down)', duration=4)
     for face, image in found:
         _add(face, image, f"{os.path.basename(_video_path)}, frame {n}")
     if found:
@@ -520,7 +539,7 @@ def _add_faceset_file(path, progress):
                 _add(max(found, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1])), image,
                      f"{name}: {file}", digest)
             else:
-                found = extract_face_images(p, (False, 0), 0.5)
+                found = extract_face_images(p, (False, 0), 0.5, upright=True)
                 if not found:
                     missing.append(file)
                 for face, img in found:
@@ -589,6 +608,38 @@ def on_keep_selected():
     _refresh()
     if _selected not in _view:          # "Needs attention" hides it now: go on to the next one
         _select_after_removal(position)
+    return _render()
+
+
+def on_turn_selected(turns):
+    """Turn the selected photo a quarter (1 = right, 3 = left), for one the
+    automatic upright turn got wrong or missed. Its face is found again in
+    the turned photo -- with the rotated passes too, so a face lying on its
+    side halfway (two quarters for an upside-down photo) is still found; the
+    checks follow. Nothing changes if no face is found at all."""
+    global _saved_ids
+    e = _by_id(_selected) if _selected is not None else None
+    if e is None:
+        return _render()
+    codes = {1: cv2.ROTATE_90_CLOCKWISE, 3: cv2.ROTATE_90_COUNTERCLOCKWISE}
+    image = cv2.rotate(e['image'], codes[turns])
+    faces = get_all_faces(image) or get_all_faces_multi(image, mode='fallback') or []
+    if not faces:
+        gr.Warning("No face found in the turned photo: it stays as it was")
+        return _render()
+    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+    # the face's size in the photo it came from (extract_face_images) is the
+    # same after a turn: the "too small" check reads it
+    if e['face'].get('source_size') is not None:
+        face['source_size'] = e['face']['source_size']
+    e['turns'] = (e.get('turns', 0) + turns) % 4
+    # a new file name: the browser would show the cached picture under the old one
+    e['thumb'] = os.path.join(_thumb_dir(), f"{e['id']}_t{e['turns']}.jpg")
+    e['image'], e['face'] = image, face
+    _write_thumb(e['thumb'], image)
+    e['metrics'] = faceset_check.photo_metrics(face, image)
+    _saved_ids = None                   # the saved faceset has the photo as it was: save again
+    _refresh()
     return _render()
 
 
