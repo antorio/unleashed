@@ -263,6 +263,7 @@ def faceswap_tab():
                         _s('identity_boost', gr.Checkbox(value=V['identity_boost'], label="Identity boost"))
                     with gr.Row():
                         _s('face_shape', gr.Slider(0.0, 1.0, value=V['face_shape'], step=0.05, label="Source jaw & chin"))
+                        _s('nose_width', gr.Slider(-15, 15, value=V['nose_width'], step=1, label="Nose width %"))
 
             # --------------------------------------------------------------- centre: preview on top, controls below
             with gr.Column(scale=5, min_width=460, elem_id="center_stage", elem_classes="fs-box fs-first fs-last"):

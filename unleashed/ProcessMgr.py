@@ -1658,6 +1658,7 @@ class ProcessMgr():
                         swap_result_frames.append(sliced_frame)
                     fake_frame = self.explode_pixel_boost(swap_result_frames, model_output_size, subsample_total, subsample_size)
                 fake_frame = fake_frame.astype(np.uint8)
+                fake_frame = self.adjust_nose_width(fake_frame, target_face, M)
                 scale_factor = 0.0
             elif p.type == 'mask':
                 # Run the mask model ONCE and re-apply the same raw mask to both
@@ -2080,6 +2081,25 @@ class ProcessMgr():
                 if k < steps - 1:
                     slices = list(self.implode_pixel_boost(full, model_size, total))
         return full
+
+
+    def adjust_nose_width(self, fake_frame, target_face, M):
+        """Nose width (unleashed/nose_width.py): narrow / widen the swapped
+        nose. 0 = off: nothing is computed and the crop is returned as is."""
+        amount = float(getattr(unleashed.globals, 'nose_width', 0.0) or 0.0)
+        if amount == 0.0:
+            return fake_frame
+        from unleashed import nose_width
+        pts = nose_width.crop_points(target_face, M)
+        if pts is None:
+            # no 68 landmarks on the face (68-point alignment off): read them
+            # from the swapped crop itself
+            inner = _crop_face_points(fake_frame)
+            if inner is None:
+                return fake_frame
+            pts = np.full((68, 2), np.nan)
+            pts[17:68] = inner
+        return nose_width.warp(fake_frame, pts, amount)
 
 
     def identity_boost_latent(self, p, inputface, first_slice):

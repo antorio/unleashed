@@ -85,7 +85,7 @@ FACTORY = {
     'every_face': G.selected_every_face,
     # swap
     'resolution': '256px', 'passes': 1, 'passes_keep': G.passes_keep_look,
-    'identity_boost': G.identity_boost, 'face_shape': G.face_shape_strength,
+    'identity_boost': G.identity_boost, 'nose_width': G.nose_width, 'face_shape': G.face_shape_strength,
     # expression
     'er': G.expression_restorer, 'er_strength': G.expression_restorer_factor,
     'er_eyes': G.expression_restore_eyes, 'er_mouth': G.expression_restore_mouth, 'er_brows': G.expression_restore_brows,
@@ -199,6 +199,7 @@ def apply_settings(settings=None):
     G.selected_every_face = bool(v['every_face'])
     G.subsample_size = int(str(v['resolution']).lower().replace('px', '').strip())
     G.identity_boost = bool(v['identity_boost'])
+    G.nose_width = float(v['nose_width'])
     G.face_shape_strength = float(v['face_shape'])
     G.expression_restorer = bool(v['er'])
     G.expression_restorer_factor = float(v['er_strength'])
@@ -312,6 +313,8 @@ def summary(section):
             parts.append(f"{int(v['passes'])} passes" + (' (kept)' if v['passes_keep'] else ''))
         if v['identity_boost']:
             parts.append('identity boost')
+        if float(v['nose_width']) != 0:
+            parts.append(f"nose {float(v['nose_width']):+.0f}%")
         if float(v['face_shape']) > 0:
             parts.append(f"face shape {float(v['face_shape']):.2f}")
         return ' · '.join(parts)

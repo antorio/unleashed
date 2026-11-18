@@ -65,6 +65,9 @@ passes_keep_look = False
 # source vector past that miss (FaceSwapInsightFace.boosted_latent). One extra
 # 128 swap + one recognition per face; off = exactly the plain swap.
 identity_boost = False
+# Nose width, % (Swap box; 0 = off, negative = narrower): the swapped nose
+# comes out ~2% wider than the target's (unleashed/nose_width.py)
+nose_width = 0.0
 # Face shape from the source, 0-1 (0 = off): warp the target's jaw / chin toward
 # the source's before swapping (see unleashed/face_shape.py). Runs buffalo_l's 68-pt
 # 3D landmark model on every face while on.
