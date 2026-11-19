@@ -744,8 +744,9 @@ class ProcessMgr():
                 p.plugin_key = key
                 extoption.update({"devicename": devicename})
                 if p.type == "swap":
-                    # ReSwapper removed -- InSwapper 128 is the only swap model.
-                    extoption.update({"modelname": "inswapper_128.onnx"})
+                    # InSwapper 128 (default) or AlphaFace 256 (Swap box "Model")
+                    alpha = str(getattr(options, 'swap_modelname', '') or '').startswith('AlphaFace')
+                    extoption.update({"modelname": "alphaface_256.onnx" if alpha else "inswapper_128.onnx"})
 
                 p.Initialize(extoption)
                 newprocessors.append(p)
@@ -2104,7 +2105,7 @@ class ProcessMgr():
 
     def identity_boost_latent(self, p, inputface, first_slice):
         """Identity boost: the boosted source input for this face, computed ONCE
-        from the first (128) slice of the TARGET crop and reused for every
+        from the first (model-size) slice of the TARGET crop and reused for every
         pixel-boost slice and pass (per slice it cost one extra swap per slice
         for the same gain). None when off: Run then uses the plain source
         input, exactly as without the option."""

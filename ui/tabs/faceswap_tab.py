@@ -253,6 +253,8 @@ def faceswap_tab():
 
                 with gr.Accordion(f"Swap · {S.summary('swap')}", open=True, elem_classes="fs-box fs-last") as acc_swap:
                     with gr.Row():
+                        _s('swap_model', gr.Dropdown(S.SWAP_MODELS, value=V['swap_model'], label="Model"))
+                    with gr.Row():
                         _s('resolution', gr.Dropdown(S.RESOLUTIONS, value=V['resolution'], label="Resolution"))
                         C['passes'] = _s('passes', gr.Slider(1, 5, value=V['passes'], step=1, label="Passes"))
                     with gr.Row(visible=int(V['passes']) > 1) as passes_keep_row:

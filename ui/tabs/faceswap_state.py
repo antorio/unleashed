@@ -30,7 +30,10 @@ from unleashed.ProcessEntry import ProcessEntry
 from unleashed.ProcessOptions import ProcessOptions
 
 G = unleashed.globals
-SWAP_MODEL = "InSwapper 128"        # the only model; ProcessOptions reads the output size (128) from it
+# Swap model (Swap box). ProcessOptions reads the output size from the name's
+# last word; apply_settings sets SWAP_MODEL, which the render / preview pass on.
+SWAP_MODELS = ['InSwapper 128', 'AlphaFace 256']
+SWAP_MODEL = SWAP_MODELS[0]
 
 # ----------------------------------------------------------------------------- choices
 
@@ -84,7 +87,7 @@ FACTORY = {
     'mode': 'Largest face', 'tolerance': G.distance_threshold, 'stay': G.selected_stay,
     'every_face': G.selected_every_face,
     # swap
-    'resolution': '256px', 'passes': 1, 'passes_keep': G.passes_keep_look,
+    'swap_model': SWAP_MODELS[0], 'resolution': '256px', 'passes': 1, 'passes_keep': G.passes_keep_look,
     'identity_boost': G.identity_boost, 'nose_width': G.nose_width, 'face_shape': G.face_shape_strength,
     # expression
     'er': G.expression_restorer, 'er_strength': G.expression_restorer_factor,
@@ -141,7 +144,7 @@ def load_saved_defaults():
     except Exception:
         return False
     choices = {'mode': MODES, 'no_face': NO_FACE, 'mask_engine': MASK_ENGINES, 'enhancer': ENHANCERS,
-               'resolution': RESOLUTIONS, 'method': (METHOD_MEMORY, METHOD_EXTRACT), 'multi_angle': MULTI_ANGLE,
+               'swap_model': SWAP_MODELS, 'resolution': RESOLUTIONS, 'method': (METHOD_MEMORY, METHOD_EXTRACT), 'multi_angle': MULTI_ANGLE,
                'det_size': (320, 640, 1024)}
     for k, v in saved.items():
         if k not in FACTORY:
@@ -198,6 +201,8 @@ def apply_settings(settings=None):
     G.selected_stay = float(v['stay'])
     G.selected_every_face = bool(v['every_face'])
     G.subsample_size = int(str(v['resolution']).lower().replace('px', '').strip())
+    global SWAP_MODEL
+    SWAP_MODEL = v['swap_model'] if v['swap_model'] in SWAP_MODELS else SWAP_MODELS[0]
     G.identity_boost = bool(v['identity_boost'])
     G.nose_width = float(v['nose_width'])
     G.face_shape_strength = float(v['face_shape'])
@@ -309,6 +314,8 @@ def summary(section):
         return v['mode'] + (f' · {len(G.TARGET_FACES)} picked' if MODES[v['mode']] == 'selected' else '')
     if section == 'swap':
         parts = [v['resolution']]
+        if v['swap_model'] != SWAP_MODELS[0]:
+            parts.insert(0, v['swap_model'])
         if int(v['passes']) > 1:
             parts.append(f"{int(v['passes'])} passes" + (' (kept)' if v['passes_keep'] else ''))
         if v['identity_boost']:

@@ -6,6 +6,47 @@ import onnxruntime
 from unleashed.typing import Face, Frame
 from unleashed.utilities import resolve_relative_path
 
+# AlphaFace 256 (Yu et al. 2026, arXiv 2601.16429; optional swap model, Swap
+# box): same arcface crop template as inswapper at 256 px, same [0,1] RGB input /
+# output, but the source is the plain w600k embedding (its norm does not matter:
+# measured unit / raw / x20 identical) instead of inswapper's emap latent. The
+# weights are FaceFusion's ONNX export (non-commercial license), downloaded the
+# first time the model is chosen and checked against FaceFusion's CRC32.
+ALPHAFACE_FILE = 'alphaface_256.onnx'
+ALPHAFACE_URL = 'https://github.com/facefusion/facefusion-assets/releases/download/models-3.9.0/alphaface_256.onnx'
+ALPHAFACE_CRC32 = 'e73fddf3'
+
+
+def _crc32(path):
+    import zlib
+    c = 0
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 24), b''):
+            c = zlib.crc32(block, c)
+    return format(c, '08x')
+
+
+def ensure_model(filename):
+    """The model's path; AlphaFace is fetched on first use (556 MB)."""
+    import os
+    path = resolve_relative_path('../models/' + filename)
+    if filename != ALPHAFACE_FILE or os.path.isfile(path):
+        return path
+    import shutil
+    import urllib.request
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    part = path + '.part'
+    print(f'[load] Downloading {filename} (556 MB, once) from {ALPHAFACE_URL}', flush=True)
+    with urllib.request.urlopen(ALPHAFACE_URL) as r, open(part, 'wb') as f:
+        shutil.copyfileobj(r, f, 1 << 22)
+    got = _crc32(part)
+    if got != ALPHAFACE_CRC32:
+        os.remove(part)
+        raise RuntimeError(f'{filename}: download damaged (crc32 {got}, expected {ALPHAFACE_CRC32})')
+    os.replace(part, path)
+    return path
+
+
 # Identity boost: how far the source vector is pushed past what inswapper
 # made (0.5 measured best; 1.0 and a second step overshoot, see boosted_latent)
 IDENTITY_BOOST_WEIGHT = 0.5
@@ -36,9 +77,12 @@ class FaceSwapInsightFace():
 
         self.plugin_options = plugin_options
         if self.model_swap_insightface is None:
-            model_path = resolve_relative_path('../models/' + self.plugin_options["modelname"])
-            graph = onnx.load(model_path).graph
-            self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
+            model_path = ensure_model(self.plugin_options["modelname"])
+            self.alphaface = self.plugin_options["modelname"] == ALPHAFACE_FILE
+            self.emap = None
+            if not self.alphaface:
+                graph = onnx.load(model_path).graph
+                self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
             self.devicename = self.plugin_options["devicename"].replace('mps', 'cpu')
             self.input_mean = 0.0
             self.input_std = 255.0
@@ -47,7 +91,7 @@ class FaceSwapInsightFace():
             sess_options.enable_cpu_mem_arena = False
             from unleashed.utilities import tuned_execution_providers
             provs = tuned_execution_providers()
-            print(f"[load] Creating face-swap (inswapper) session: {self.plugin_options['modelname']}  providers={provs}")
+            print(f"[load] Creating face-swap session: {self.plugin_options['modelname']}  providers={provs}")
             self.model_swap_insightface = onnxruntime.InferenceSession(model_path, sess_options, providers=provs)
 
 
@@ -56,6 +100,8 @@ class FaceSwapInsightFace():
         """inswapper's source input: the source identity projected through emap
         (exactly as before the identity boost existed)."""
         e = np.asarray(source_face.normed_embedding, dtype=np.float32).reshape(1, -1)
+        if getattr(self, 'alphaface', False):
+            return np.ascontiguousarray(e)
         latent = np.dot(e, self.emap)
         latent /= np.linalg.norm(latent)
         return latent.astype(np.float32)
@@ -72,9 +118,9 @@ class FaceSwapInsightFace():
         0.809, no pair worse. The old formula (push away from the TARGET's
         identity) lowered it at every strength (0.738 at 1.0) and was removed.
 
-        crop: one prepared 128 crop (with pixel boost the first slice): the
+        crop: one prepared model-size crop (with pixel boost the first slice): the
         correction is computed ONCE per face and reused for every slice and
-        pass, so the extra cost is one 128 swap + one recognition per face.
+        pass, so the extra cost is one swap + one recognition per face.
         Returns None (= plain source latent) if no recogniser is available."""
         rec = _recogniser()
         if rec is None:
@@ -82,12 +128,21 @@ class FaceSwapInsightFace():
         s = np.asarray(source_face.normed_embedding, dtype=np.float32).reshape(1, -1)
         s = s / (np.linalg.norm(s) + 1e-9)
         out = self._run(self.source_latent(source_face), crop)
-        # inswapper's 128 crop is the arcface 112 template shifted 8 px right
+        # the 128 crop is the arcface 112 template shifted 8 px right (scaled
+        # up for AlphaFace's 256 crop)
         img = np.clip(out.transpose(1, 2, 0)[:, :, ::-1] * 255.0, 0, 255).round().astype(np.uint8)
-        o = np.asarray(rec.get_feat(np.ascontiguousarray(img[0:112, 8:120])), dtype=np.float32).reshape(1, -1)
+        k = img.shape[0] / 128.0
+        face = img[0:int(round(112 * k)), int(round(8 * k)):int(round(120 * k))]
+        if face.shape[0] != 112:
+            import cv2
+            face = cv2.resize(face, (112, 112), interpolation=cv2.INTER_AREA)
+        o = np.asarray(rec.get_feat(np.ascontiguousarray(face)), dtype=np.float32).reshape(1, -1)
         o = o / (np.linalg.norm(o) + 1e-9)
         e = s + IDENTITY_BOOST_WEIGHT * (s - o)
-        latent = np.dot(e / (np.linalg.norm(e) + 1e-9), self.emap)
+        e = e / (np.linalg.norm(e) + 1e-9)
+        if getattr(self, 'alphaface', False):
+            return e.astype(np.float32)
+        latent = np.dot(e, self.emap)
         latent /= np.linalg.norm(latent)
         return latent.astype(np.float32)
 
