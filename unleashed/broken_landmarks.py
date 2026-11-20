@@ -153,7 +153,8 @@ class BrokenLandmarkFilter:
             for t in self.tracks:
                 t['age'] += 1
             self.tracks = [t for t in self.tracks if t['age'] <= MAX_AGE]
-            gray = None
+            shape = frame.shape
+            crop = lambda r: _gray(frame[r[1]:r[3], r[0]:r[2]])    # grey of the face area only
             for f in faces:
                 P, kind, iod = self._points(f)
                 if P is None or iod < 4.0:
@@ -162,13 +163,11 @@ class BrokenLandmarkFilter:
                 size = float(max(bbox[2] - bbox[0], bbox[3] - bbox[1])) + 1e-6
                 center = (bbox[:2] + bbox[2:4]) * 0.5
                 t = self._match(center, size)
-                if gray is None:
-                    gray = _gray(frame)
-                roi = self._roi(P if t is None else np.vstack([P, t['S']]), size, gray.shape)
+                roi = self._roi(P if t is None else np.vstack([P, t['S']]), size, shape)
                 state = dict(center=center, size=size, age=0, kind=kind, raw=P.copy(), bad=0, cons=0,
                              S=P.copy(), lm68=self._get(f, 'landmark_3d_68'), kps=self._get(f, 'kps'),
                              lm106=self._get(f, 'landmark_2d_106'), roi=roi,
-                             g=None if roi is None else gray[roi[1]:roi[3], roi[0]:roi[2]].copy())
+                             g=None if roi is None else crop(roi))
                 if t is None or t['kind'] != kind or t['age'] != 1 or t['g'] is None or t['roi'] is None:
                     # new face, a gap, or a different point set: start over here
                     if t is not None:
@@ -176,7 +175,7 @@ class BrokenLandmarkFilter:
                     self.tracks.append(state)
                     continue
                 x0, y0, x1, y1 = t['roi']
-                g0, g1 = t['g'], gray[y0:y1, x0:x1]
+                g0, g1 = t['g'], crop(t['roi'])
                 off = np.array([x0, y0], np.float64)
                 S = t['S']
                 T = self._flow(g0, g1, S - off, iod)
