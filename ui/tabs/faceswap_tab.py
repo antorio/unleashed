@@ -401,6 +401,7 @@ def faceswap_tab():
                                 C['dz_col'] = dz_col
                                 _s('smoothing_deadzone', gr.Slider(0.0, 0.03, value=V['smoothing_deadzone'], step=0.001,
                                                                    label="Still-face limit"))
+                    _s('hold_broken', gr.Checkbox(value=V['hold_broken'], label="Ignore broken landmarks (video)"))
                     C['multi_angle'] = _s('multi_angle', gr.Dropdown(list(S.MULTI_ANGLE), value=V['multi_angle'], label="Rotated faces"))
                     with gr.Column(visible=S.MULTI_ANGLE[V['multi_angle']] == 'always') as upright_col:
                         C['upright_col'] = upright_col

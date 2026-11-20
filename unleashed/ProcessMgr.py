@@ -9,6 +9,7 @@ from unleashed.face_util import get_first_face, get_first_face_multi, get_all_fa
 from unleashed.landmark68 import refine_faces_landmark68
 from unleashed.utilities import compute_cosine_distance, get_device, str_to_class, shuffle_array
 from unleashed.face_stabilizer import LandmarkStabilizer, TargetTracks
+from unleashed.broken_landmarks import BrokenLandmarkFilter
 
 from typing import Any, List, Callable
 from unleashed.typing import Frame, Face
@@ -682,6 +683,9 @@ class ProcessMgr():
             deadzone_frac=getattr(unleashed.globals, 'landmark_smoothing_deadzone', 0.0),
             method=getattr(unleashed.globals, 'landmark_smoothing_method', 'classic')
         )
+        # Ignore broken landmarks (video): occluders (unleashed/broken_landmarks.py)
+        self.landmark_filter = BrokenLandmarkFilter()
+        self.landmark_filter_held = 0
         # running face-shape averages (Source jaw & chin)
         self.target_tracks = TargetTracks()
         # Specific people: the last frames' choice ("Stay on the same person")
@@ -955,6 +959,9 @@ class ProcessMgr():
             self.stabilizer.reset()
         if getattr(self, 'target_tracks', None) is not None:
             self.target_tracks.reset()
+        if getattr(self, 'landmark_filter', None) is not None:
+            self.landmark_filter.reset()
+            self.landmark_filter_held = 0
         if getattr(self, 'pick_memory', None) is not None:
             self.pick_memory.reset()
         if getattr(self, 'sequencer', None) is not None:
@@ -1085,6 +1092,9 @@ class ProcessMgr():
                 print("[finish] WARNING: a worker crashed and a thread did not exit cleanly (leaked as daemon)")
 
         cap.release()
+        if getattr(unleashed.globals, 'landmark_hold_broken', False):
+            print(f'[landmarks] broken landmarks ignored in {self.landmark_filter_held} face(s) '
+                  f'of {frame_count} frames', flush=True)
         memory = getattr(self, 'pick_memory', None)
         if memory is not None and self.options.swap_mode == 'selected' \
                 and float(getattr(unleashed.globals, 'selected_stay', 0.0) or 0.0) > 0.0:
@@ -1267,6 +1277,10 @@ class ProcessMgr():
         track_shape = float(getattr(unleashed.globals, 'face_shape_strength', 0.0) or 0.0) > 0.0
         tracks_on = (self.video_mode and getattr(self, 'target_tracks', None) is not None
                      and track_shape and not rotated_retry)
+        # Ignore broken landmarks: video frames in order only
+        filter_on = (bool(getattr(unleashed.globals, 'landmark_hold_broken', False)) and self.video_mode
+                     and frame_index is not None and not rotated_retry
+                     and getattr(self, 'landmark_filter', None) is not None)
         mode = unleashed.globals.multi_angle_detection_mode
         angles = unleashed.globals.multi_angle_angles
 
@@ -1290,6 +1304,8 @@ class ProcessMgr():
             # smoothing mid-render cannot desync the sequencer.
             with self.sequencer.in_order(frame_index):
                 refine_faces_landmark68(frame, [face])
+                if filter_on:
+                    self.landmark_filter_held += self.landmark_filter.filter([face], frame)
                 if smoothing_on:
                     self.stabilizer.stabilize([face])
                 if tracks_on:
@@ -1321,6 +1337,8 @@ class ProcessMgr():
             # ordered: see note above
             with self.sequencer.in_order(frame_index):
                 refine_faces_landmark68(frame, faces)
+                if filter_on:
+                    self.landmark_filter_held += self.landmark_filter.filter(faces, frame)
                 if smoothing_on:
                     self.stabilizer.stabilize(faces)
                 if tracks_on:

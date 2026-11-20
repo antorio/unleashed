@@ -140,6 +140,9 @@ landmark_smoothing_deadzone = 0.006
 # 'classic' (motion-gated EMA + still-face limit) or 'one_euro' ("Follow
 # motion": does not trail a moving head; the still-face limit is not used)
 landmark_smoothing_method = 'classic'
+# Ignore broken landmarks (video): hold the last good points, moved by the
+# image motion, on frames where an occluder breaks them (broken_landmarks.py)
+landmark_hold_broken = False
 force_landmark_smoothing = False
 
 

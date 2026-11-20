@@ -115,6 +115,7 @@ FACTORY = {
     'lmk_gate': G.landmark_sanity_gate, 'lmk_gate_thr': G.landmark_sanity_threshold,
     'smoothing': G.landmark_smoothing, 'smoothing_strength': G.landmark_smoothing_strength,
     'smoothing_deadzone': G.landmark_smoothing_deadzone, 'smoothing_method': SMOOTHING_METHODS[0],
+    'hold_broken': G.landmark_hold_broken,
     # video output
     'method': METHOD_MEMORY, 'keep_frames': False, 'no_face': 'Try rotated, else keep the original',
     'skip_audio': False,
@@ -244,6 +245,7 @@ def apply_settings(settings=None):
     G.landmark_smoothing_strength = float(v['smoothing_strength'])
     G.landmark_smoothing_deadzone = float(v['smoothing_deadzone'])
     G.landmark_smoothing_method = SMOOTHING_METHOD.get(v['smoothing_method'], 'classic')
+    G.landmark_hold_broken = bool(v['hold_broken'])
     G.no_face_action = NO_FACE[v['no_face']]
     G.skip_audio = bool(v['skip_audio'])
     G.keep_frames = bool(v['keep_frames']) and v['method'] == METHOD_EXTRACT
@@ -348,7 +350,8 @@ def summary(section):
     if section == 'enhance':
         return 'none' if v['enhancer'] == 'None' else f"{v['enhancer']} · {float(v['enhancer_blend']):.2f}"
     if section == 'detection':
-        return f"{float(v['det_thresh']):.2f} · {v['det_size']} · " + ('68-pt' if v['lmk_align'] else '5-pt')
+        return (f"{float(v['det_thresh']):.2f} · {v['det_size']} · " + ('68-pt' if v['lmk_align'] else '5-pt')
+                + (' · ignore broken' if v['hold_broken'] else ''))
     if section == 'video':
         return ('in memory' if v['method'] == METHOD_MEMORY else 'extract frames') + ' · ' + {
             0: 'keep original', 1: 'try rotated', 2: 'drop frame'}[NO_FACE[v['no_face']]]
