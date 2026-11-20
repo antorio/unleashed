@@ -266,6 +266,8 @@ def faceswap_tab():
                     with gr.Row():
                         _s('face_shape', gr.Slider(0.0, 1.0, value=V['face_shape'], step=0.05, label="Source jaw & chin"))
                         _s('nose_width', gr.Slider(-15, 15, value=V['nose_width'], step=1, label="Nose width %"))
+                    with gr.Row():
+                        _s('target_texture', gr.Slider(0, 100, value=V['target_texture'], step=5, label="Target skin texture %"))
 
             # --------------------------------------------------------------- centre: preview on top, controls below
             with gr.Column(scale=5, min_width=460, elem_id="center_stage", elem_classes="fs-box fs-first fs-last"):
@@ -391,10 +393,14 @@ def faceswap_tab():
                             _s('lmk_gate_thr', gr.Slider(0.0, 0.50, value=V['lmk_gate_thr'], step=0.005, label="Gate threshold"))
                     sm = _s('smoothing', gr.Checkbox(value=V['smoothing'], label="Landmark smoothing (video)"))
                     with gr.Column(visible=V['smoothing']) as sm_col:
+                        C['smoothing_method'] = _s('smoothing_method', gr.Dropdown(S.SMOOTHING_METHODS, value=V['smoothing_method'],
+                                                                                   label="Method"))
                         with gr.Row():
                             _s('smoothing_strength', gr.Slider(0.0, 1.0, value=V['smoothing_strength'], step=0.05, label="Strength"))
-                            _s('smoothing_deadzone', gr.Slider(0.0, 0.03, value=V['smoothing_deadzone'], step=0.001,
-                                                               label="Still-face limit"))
+                            with gr.Column(visible=V['smoothing_method'] == 'Classic', min_width=160) as dz_col:
+                                C['dz_col'] = dz_col
+                                _s('smoothing_deadzone', gr.Slider(0.0, 0.03, value=V['smoothing_deadzone'], step=0.001,
+                                                                   label="Still-face limit"))
                     C['multi_angle'] = _s('multi_angle', gr.Dropdown(list(S.MULTI_ANGLE), value=V['multi_angle'], label="Rotated faces"))
                     with gr.Column(visible=S.MULTI_ANGLE[V['multi_angle']] == 'always') as upright_col:
                         C['upright_col'] = upright_col
@@ -459,6 +465,7 @@ def _wire(tick, er, er_col, engine, clip_col, enh, enh_col, lmk, lmk_col, sm, sm
     always = next(k for k, v in S.MULTI_ANGLE.items() if v == 'always')
     C['multi_angle'].change(None, [C['multi_angle']], [C['upright_col']], js=show(f"v === '{always}'"), **INTERNAL)
     C['lmk_gate'].change(None, [C['lmk_gate']], [C['gate_col']], js=show('v'), **INTERNAL)
+    C['smoothing_method'].change(None, [C['smoothing_method']], [C['dz_col']], js=show("v === 'Classic'"), **INTERNAL)
 
     # preview (it also refreshes the section headers)
     preview_inputs = set(settings.values()) | {C['view'], C['frame'], C['auto'], tick}

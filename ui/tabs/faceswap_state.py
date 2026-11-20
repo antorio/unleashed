@@ -37,6 +37,10 @@ SWAP_MODEL = SWAP_MODELS[0]
 
 # ----------------------------------------------------------------------------- choices
 
+# Landmark smoothing method label -> engine value
+SMOOTHING_METHOD = {'Classic': 'classic', 'Follow motion': 'one_euro'}
+SMOOTHING_METHODS = list(SMOOTHING_METHOD)
+
 MODES = {                           # label -> ProcessMgr swap mode
     'Largest face': 'first',
     'All faces': 'all',
@@ -88,7 +92,7 @@ FACTORY = {
     'every_face': G.selected_every_face,
     # swap
     'swap_model': SWAP_MODELS[0], 'resolution': '256px', 'passes': 1, 'passes_keep': G.passes_keep_look,
-    'identity_boost': G.identity_boost, 'nose_width': G.nose_width, 'face_shape': G.face_shape_strength,
+    'identity_boost': G.identity_boost, 'nose_width': G.nose_width, 'target_texture': G.target_texture, 'face_shape': G.face_shape_strength,
     # expression
     'er': G.expression_restorer, 'er_strength': G.expression_restorer_factor,
     'er_eyes': G.expression_restore_eyes, 'er_mouth': G.expression_restore_mouth, 'er_brows': G.expression_restore_brows,
@@ -110,7 +114,7 @@ FACTORY = {
     'lmk_align': G.use_landmark_alignment, 'hi_lmk': G.use_hi_landmarker,
     'lmk_gate': G.landmark_sanity_gate, 'lmk_gate_thr': G.landmark_sanity_threshold,
     'smoothing': G.landmark_smoothing, 'smoothing_strength': G.landmark_smoothing_strength,
-    'smoothing_deadzone': G.landmark_smoothing_deadzone,
+    'smoothing_deadzone': G.landmark_smoothing_deadzone, 'smoothing_method': SMOOTHING_METHODS[0],
     # video output
     'method': METHOD_MEMORY, 'keep_frames': False, 'no_face': 'Try rotated, else keep the original',
     'skip_audio': False,
@@ -144,7 +148,7 @@ def load_saved_defaults():
     except Exception:
         return False
     choices = {'mode': MODES, 'no_face': NO_FACE, 'mask_engine': MASK_ENGINES, 'enhancer': ENHANCERS,
-               'swap_model': SWAP_MODELS, 'resolution': RESOLUTIONS, 'method': (METHOD_MEMORY, METHOD_EXTRACT), 'multi_angle': MULTI_ANGLE,
+               'swap_model': SWAP_MODELS, 'smoothing_method': SMOOTHING_METHODS, 'resolution': RESOLUTIONS, 'method': (METHOD_MEMORY, METHOD_EXTRACT), 'multi_angle': MULTI_ANGLE,
                'det_size': (320, 640, 1024)}
     for k, v in saved.items():
         if k not in FACTORY:
@@ -205,6 +209,7 @@ def apply_settings(settings=None):
     SWAP_MODEL = v['swap_model'] if v['swap_model'] in SWAP_MODELS else SWAP_MODELS[0]
     G.identity_boost = bool(v['identity_boost'])
     G.nose_width = float(v['nose_width'])
+    G.target_texture = float(v['target_texture'])
     G.face_shape_strength = float(v['face_shape'])
     G.expression_restorer = bool(v['er'])
     G.expression_restorer_factor = float(v['er_strength'])
@@ -238,6 +243,7 @@ def apply_settings(settings=None):
     G.landmark_smoothing = bool(v['smoothing'])
     G.landmark_smoothing_strength = float(v['smoothing_strength'])
     G.landmark_smoothing_deadzone = float(v['smoothing_deadzone'])
+    G.landmark_smoothing_method = SMOOTHING_METHOD.get(v['smoothing_method'], 'classic')
     G.no_face_action = NO_FACE[v['no_face']]
     G.skip_audio = bool(v['skip_audio'])
     G.keep_frames = bool(v['keep_frames']) and v['method'] == METHOD_EXTRACT
@@ -322,6 +328,8 @@ def summary(section):
             parts.append('identity boost')
         if float(v['nose_width']) != 0:
             parts.append(f"nose {float(v['nose_width']):+.0f}%")
+        if float(v['target_texture']) > 0:
+            parts.append(f"skin texture {float(v['target_texture']):.0f}%")
         if float(v['face_shape']) > 0:
             parts.append(f"face shape {float(v['face_shape']):.2f}")
         return ' · '.join(parts)

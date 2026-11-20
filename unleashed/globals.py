@@ -68,6 +68,10 @@ identity_boost = False
 # Nose width, % (Swap box; 0 = off, negative = narrower): the swapped nose
 # comes out ~2% wider than the target's (unleashed/nose_width.py)
 nose_width = 0.0
+# Target skin texture, % (Swap box; 0 = off): the target's fine skin detail
+# (pores, spots, shine, grain) laid thinly over the swapped skin
+# (unleashed/target_texture.py)
+target_texture = 0.0
 # Face shape from the source, 0-1 (0 = off): warp the target's jaw / chin toward
 # the source's before swapping (see unleashed/face_shape.py). Runs buffalo_l's 68-pt
 # 3D landmark model on every face while on.
@@ -133,6 +137,9 @@ landmark_smoothing_strength = 0.7
 # ~400px face is ~2.4px and cuts still-head jitter ~60% while barely affecting real
 # motion. 0 disables it. Tune via the "Landmark dead-zone" slider.
 landmark_smoothing_deadzone = 0.006
+# 'classic' (motion-gated EMA + still-face limit) or 'one_euro' ("Follow
+# motion": does not trail a moving head; the still-face limit is not used)
+landmark_smoothing_method = 'classic'
 force_landmark_smoothing = False
 
 

@@ -679,7 +679,8 @@ class ProcessMgr():
         self.sequencer = FrameSequencer()
         self.stabilizer = LandmarkStabilizer(
             strength=unleashed.globals.landmark_smoothing_strength,
-            deadzone_frac=getattr(unleashed.globals, 'landmark_smoothing_deadzone', 0.0)
+            deadzone_frac=getattr(unleashed.globals, 'landmark_smoothing_deadzone', 0.0),
+            method=getattr(unleashed.globals, 'landmark_smoothing_method', 'classic')
         )
         # running face-shape averages (Source jaw & chin)
         self.target_tracks = TargetTracks()
@@ -1641,7 +1642,11 @@ class ProcessMgr():
 
         import time as _pt
         _prof = getattr(unleashed.globals, 'profile_timings', False)
-        for p in self.processors:
+        # Target skin texture goes on once the face itself is final: after the
+        # swap, or after the expression restorer when it runs (mask / enhancer
+        # come later)
+        _texture_at = max([i for i, q in enumerate(self.processors) if q.type in ('swap', 'expression')], default=-1)
+        for _pi, p in enumerate(self.processors):
             _ps = _pt.perf_counter()
             if p.type == 'swap':
                 if self.options.num_swap_steps > 1 and getattr(unleashed.globals, 'passes_keep_look', False):
@@ -1698,6 +1703,8 @@ class ProcessMgr():
                 except Exception as _e:
                     if getattr(unleashed.globals, 'expression_debug', False):
                         print(f"[enhancer] '{p.processorname}' failed on a frame ({_e}); using un-enhanced")
+            if _pi == _texture_at and not self.options.show_face_masking:
+                fake_frame = self.add_target_texture(fake_frame, aligned_img, target_face, M)
             if _prof:
                 print(f"[timing]    processor '{p.processorname}' ({p.type}) = {(_pt.perf_counter()-_ps)*1000:.0f}ms")
 
@@ -2101,6 +2108,24 @@ class ProcessMgr():
             pts = np.full((68, 2), np.nan)
             pts[17:68] = inner
         return nose_width.warp(fake_frame, pts, amount)
+
+
+    def add_target_texture(self, fake_frame, aligned_img, target_face, M):
+        """Target skin texture (unleashed/target_texture.py): the target's fine
+        skin detail laid thinly over the swapped skin. 0 = off: nothing is
+        computed and the crop is returned as is."""
+        amount = float(getattr(unleashed.globals, 'target_texture', 0.0) or 0.0)
+        if amount <= 0.0:
+            return fake_frame
+        from unleashed import nose_width, target_texture
+        pts = nose_width.crop_points(target_face, M)
+        if pts is None:
+            inner = _crop_face_points(aligned_img)
+            if inner is None:
+                return fake_frame
+            pts = np.full((68, 2), np.nan)
+            pts[17:68] = inner
+        return target_texture.apply(np.clip(fake_frame, 0, 255).astype(np.uint8), aligned_img, pts, amount)
 
 
     def identity_boost_latent(self, p, inputface, first_slice):

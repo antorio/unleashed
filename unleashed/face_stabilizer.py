@@ -18,7 +18,7 @@ class LandmarkStabilizer:
 
     def __init__(self, strength: float = 0.7, motion_frac: float = 0.05,
                  match_frac: float = 0.6, max_age: int = 8,
-                 deadzone_frac: float = 0.0):
+                 deadzone_frac: float = 0.0, method: str = 'classic'):
         # strength in [0,1]; higher = smoother. Maps to a floor on alpha.
         self.alpha_min = float(np.clip(1.0 - strength, 0.08, 1.0))
         self.motion_frac = motion_frac
@@ -30,6 +30,10 @@ class LandmarkStabilizer:
         # jitter. Real motion above the dead-zone is followed as before. 0 = off
         # (identical to the previous behaviour).
         self.deadzone_frac = max(0.0, float(deadzone_frac))
+        # 'one_euro' (Method "Follow motion"): see _stabilize_one_euro
+        self.method = method if method in ('classic', 'one_euro') else 'classic'
+        s = float(np.clip(strength, 0.0, 1.0))
+        self.oe_beta = float(np.clip(160.0 * 2.0 ** ((0.5 - s) / 0.2), 10.0, 640.0))
         self.tracks = []
         self._lock = Lock()
 
@@ -53,9 +57,79 @@ class LandmarkStabilizer:
             v = getattr(face, key, None)
         return None if v is None else np.asarray(v)
 
+    # One-Euro constants (cycles per frame); speed is measured per face size
+    OE_MIN_CUTOFF = 0.02
+    OE_D_CUTOFF = 0.1
+
+    @staticmethod
+    def _oe_alpha(fc):
+        return 1.0 / (1.0 + 1.0 / (2.0 * np.pi * fc))
+
+    def _one_euro(self, state, cur, size):
+        """One-Euro filter (Casiez et al. 2012) per point: the cutoff rises
+        with the point's own smoothed speed, so a still face is smoothed hard
+        while a moving one is followed without trailing behind. state =
+        (x, dx) or None; returns (out, new_state)."""
+        if cur is None:
+            return None, state
+        cur = np.asarray(cur, dtype=np.float64)
+        if state is None or state[0].shape != cur.shape:
+            return cur, (cur.copy(), np.zeros_like(cur))
+        x, dx = state
+        dx = dx + self._oe_alpha(self.OE_D_CUTOFF) * ((cur - x) - dx)
+        speed = np.linalg.norm(dx, axis=-1, keepdims=True) / max(size, 1e-6)
+        a = self._oe_alpha(self.OE_MIN_CUTOFF + self.oe_beta * speed)
+        x = x + a * (cur - x)
+        return x, (x.copy(), dx)
+
+    def _stabilize_one_euro(self, faces):
+        """Method "Follow motion": measured on synthetic clips with known motion
+        (scratchpad/jit, 5 alignment points, % of eye distance, 1k3d68): the
+        classic filter trails a moving head by 3.3-4.5 (and its frame-to-frame
+        wobble while moving rises 0.21 -> 0.31); this one trails by 0.4-0.6,
+        wobbles as little as the raw points while moving, and about half as
+        much as them while still. No dead-zone (freezing then letting go is a
+        stick-slip of its own)."""
+        with self._lock:
+            for t in self.tracks:
+                t['age'] += 1
+            self.tracks = [t for t in self.tracks if t['age'] <= self.max_age]
+            for f in faces:
+                bbox = np.asarray(f.bbox, dtype=np.float32)
+                size = float(max(bbox[2] - bbox[0], bbox[3] - bbox[1])) + 1e-6
+                center = np.array([(bbox[0] + bbox[2]) * 0.5,
+                                   (bbox[1] + bbox[3]) * 0.5], dtype=np.float32)
+                kps = self._get(f, 'kps')
+                lm106 = self._get(f, 'landmark_2d_106')
+                lm68 = self._get(f, 'landmark_3d_68')
+                t = self._match(center, size)
+                if t is None:
+                    t = {'oe_kps': None, 'oe_106': None, 'oe_68': None}
+                    self.tracks.append(t)
+                new_kps, t['oe_kps'] = self._one_euro(t['oe_kps'], kps, size)
+                new_106, t['oe_106'] = self._one_euro(t['oe_106'], lm106, size)
+                new_68 = None
+                if lm68 is not None:
+                    xy, t['oe_68'] = self._one_euro(t['oe_68'], lm68[:, :2], size)
+                    new_68 = lm68.copy()
+                    new_68[:, :2] = xy
+                t['center'], t['size'], t['age'] = center, size, 0
+                try:
+                    if new_kps is not None:
+                        f['kps'] = new_kps.astype(kps.dtype)
+                    if new_106 is not None:
+                        f['landmark_2d_106'] = new_106.astype(lm106.dtype)
+                    if new_68 is not None:
+                        f['landmark_3d_68'] = new_68
+                except Exception:
+                    pass
+        return faces
+
     def stabilize(self, faces):
         if not faces:
             return faces
+        if self.method == 'one_euro':
+            return self._stabilize_one_euro(faces)
         with self._lock:
             for t in self.tracks:
                 t['age'] += 1
