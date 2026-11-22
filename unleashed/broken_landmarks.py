@@ -89,9 +89,16 @@ class BrokenLandmarkFilter:
             return landmark_68_to_5(np.concatenate([P, np.zeros((len(P), 1))], 1))
         return P
 
+    def _drop(self, t):
+        # by identity: list.remove compares the dicts, i.e. their numpy arrays
+        # (ValueError as soon as there are two tracks)
+        self.tracks = [x for x in self.tracks if x is not t]
+
     def _match(self, center, size):
         best, best_d = None, 1e18
         for t in self.tracks:
+            if t['age'] == 0:               # already taken by a face of this frame
+                continue
             d = float(np.hypot(*(center - t['center'])))
             if d < 0.6 * size and d < best_d:
                 best_d, best = d, t
@@ -171,7 +178,7 @@ class BrokenLandmarkFilter:
                 if t is None or t['kind'] != kind or t['age'] != 1 or t['g'] is None or t['roi'] is None:
                     # new face, a gap, or a different point set: start over here
                     if t is not None:
-                        self.tracks.remove(t)
+                        self._drop(t)
                     self.tracks.append(state)
                     continue
                 x0, y0, x1, y1 = t['roi']
@@ -180,7 +187,7 @@ class BrokenLandmarkFilter:
                 S = t['S']
                 T = self._flow(g0, g1, S - off, iod)
                 if T is None:
-                    self.tracks.remove(t)
+                    self._drop(t)
                     self.tracks.append(state)
                     continue
                 A, b = T[:, :2], T[:, 2]
@@ -193,7 +200,7 @@ class BrokenLandmarkFilter:
                         or self._pixels_agree(g0, g1, S - off, P - off, iod))
                 if keep:
                     state['cons'] = cons
-                    self.tracks.remove(t)
+                    self._drop(t)
                     self.tracks.append(state)
                     continue
                 # broken frame: the kept points, moved by the image motion
@@ -215,6 +222,6 @@ class BrokenLandmarkFilter:
                         new['lm106'] = l106
                 except Exception:
                     pass
-                self.tracks.remove(t)
+                self._drop(t)
                 self.tracks.append(new)
         return held
