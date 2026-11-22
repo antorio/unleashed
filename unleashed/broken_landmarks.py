@@ -133,6 +133,10 @@ class BrokenLandmarkFilter:
         ok = (st[:, 0] == 1) & (st2[:, 0] == 1) & (np.linalg.norm((pb - p0)[:, 0], axis=1) < 0.5)
         if ok.sum() < 8:
             return None
+        # RANSAC draws from OpenCV's per-thread RNG: without a fixed seed the
+        # result depended on which worker thread ran the frame (8 threads !=
+        # 1 thread on a 6-face clip)
+        cv2.setRNGSeed(1234)
         T, inl = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC,
                                              ransacReprojThreshold=max(1.0, 0.02 * iod))
         if T is None or inl is None or inl.sum() < 6:
