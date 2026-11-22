@@ -229,10 +229,12 @@ class FrameSequencer():
     def __init__(self):
         self._cond = Condition()
         self._expected = 0
+        self.unordered = 0          # frames that went in without their turn (timeout / late)
 
     def reset(self):
         with self._cond:
             self._expected = 0
+            self.unordered = 0
             self._cond.notify_all()
 
     def pass_turn(self, index):
@@ -255,11 +257,14 @@ class FrameSequencer():
                 if remaining <= 0:
                     # Never hang the render: if the frame we are waiting for was
                     # dropped, carry on unordered rather than deadlock.
+                    self.unordered += 1
                     break
                 # wait in short slices: an abort flips unleashed.globals.processing
                 # without touching this condition, so a waiter that slept for the
                 # whole timeout would keep the Stop button hanging for seconds.
                 self._cond.wait(min(remaining, 0.1))
+            if self._expected > index:
+                self.unordered += 1     # a later frame already went past this one
         try:
             yield
         finally:
@@ -1092,6 +1097,10 @@ class ProcessMgr():
                 print("[finish] WARNING: a worker crashed and a thread did not exit cleanly (leaked as daemon)")
 
         cap.release()
+        seq = getattr(self, 'sequencer', None)
+        if seq is not None and seq.unordered:
+            print(f'[order] {seq.unordered} of {frame_count} frames went into landmark smoothing out of order '
+                  f'(a frame waited more than 10 s for the one before it)', flush=True)
         if getattr(unleashed.globals, 'landmark_hold_broken', False):
             print(f'[landmarks] broken landmarks ignored in {self.landmark_filter_held} face(s) '
                   f'of {frame_count} frames', flush=True)
@@ -1305,7 +1314,7 @@ class ProcessMgr():
             with self.sequencer.in_order(frame_index):
                 refine_faces_landmark68(frame, [face])
                 if filter_on:
-                    self.landmark_filter_held += self.landmark_filter.filter([face], frame)
+                    self.landmark_filter_held += self.landmark_filter.filter([face], frame, frame_index)
                 if smoothing_on:
                     self.stabilizer.stabilize([face])
                 if tracks_on:
@@ -1338,7 +1347,7 @@ class ProcessMgr():
             with self.sequencer.in_order(frame_index):
                 refine_faces_landmark68(frame, faces)
                 if filter_on:
-                    self.landmark_filter_held += self.landmark_filter.filter(faces, frame)
+                    self.landmark_filter_held += self.landmark_filter.filter(faces, frame, frame_index)
                 if smoothing_on:
                     self.stabilizer.stabilize(faces)
                 if tracks_on:

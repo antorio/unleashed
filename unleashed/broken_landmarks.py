@@ -154,7 +154,7 @@ class BrokenLandmarkFilter:
             return False
         return float(np.median(np.linalg.norm(P[ok] - p1[ok, 0], axis=1))) / iod <= VETO
 
-    def filter(self, faces, frame):
+    def filter(self, faces, frame, frame_index=None):
         """faces: this frame's faces, in frame order (ordered section). Writes the
         held points back onto broken faces. Returns the number of faces held."""
         if not faces or frame is None:
@@ -175,11 +175,15 @@ class BrokenLandmarkFilter:
                 center = (bbox[:2] + bbox[2:4]) * 0.5
                 t = self._match(center, size)
                 roi = self._roi(P if t is None else np.vstack([P, t['S']]), size, shape)
-                state = dict(center=center, size=size, age=0, kind=kind, raw=P.copy(), bad=0, cons=0,
+                state = dict(center=center, size=size, age=0, kind=kind, index=frame_index, raw=P.copy(), bad=0, cons=0,
                              S=P.copy(), lm68=self._get(f, 'landmark_3d_68'), kps=self._get(f, 'kps'),
                              lm106=self._get(f, 'landmark_2d_106'), roi=roi,
                              g=None if roi is None else crop(roi))
-                if t is None or t['kind'] != kind or t['age'] != 1 or t['g'] is None or t['roi'] is None:
+                # only the frame right before this one: optical flow and "the last
+                # good points" mean nothing across a gap or out of order
+                adjacent = t is not None and t['age'] == 1 and (
+                    frame_index is None or t.get('index') is None or t['index'] == frame_index - 1)
+                if not adjacent or t['kind'] != kind or t['g'] is None or t['roi'] is None:
                     # new face, a gap, or a different point set: start over here
                     if t is not None:
                         self._drop(t)
